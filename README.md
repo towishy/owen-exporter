@@ -2,6 +2,8 @@
 
 ![Owen Exporter SVG download menu](screenshot/svgtodown.png)
 
+![Owen Exporter Markdown to HTML menu](screenshot/mdtohtml.png)
+
 Owen Exporter is an Obsidian plugin for two export workflows:
 
 - Right-click an embedded SVG image and download it as PNG or JPEG.
