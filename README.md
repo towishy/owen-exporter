@@ -38,6 +38,8 @@ The same actions are available as commands so users can assign or change hotkeys
 
 Reading mode text selections are also supported through the browser selection context menu. In that mode the plugin copies or saves the selected rendered HTML fragment.
 
+Table, code block, and callout exports include inline styles copied from the active Obsidian preview so the pasted or saved HTML keeps the Live Preview look more closely.
+
 ## Development
 
 ```powershell

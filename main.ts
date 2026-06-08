@@ -94,6 +94,99 @@ const DEFAULT_SETTINGS: OwenExporterSettings = {
   htmlSaveMode: "document",
 };
 
+const HTML_STYLE_SELECTOR = [
+  "table",
+  "thead",
+  "tbody",
+  "tr",
+  "th",
+  "td",
+  "pre",
+  "code",
+  "blockquote",
+  "p",
+  "ul",
+  "ol",
+  "li",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  ".callout",
+  ".callout-title",
+  ".callout-title-inner",
+  ".callout-content",
+  ".callout-icon",
+].join(", ");
+
+const HTML_STYLE_PROPERTIES = [
+  "background-color",
+  "align-items",
+  "border",
+  "border-top",
+  "border-right",
+  "border-bottom",
+  "border-left",
+  "border-collapse",
+  "border-spacing",
+  "border-radius",
+  "box-shadow",
+  "box-sizing",
+  "color",
+  "display",
+  "flex",
+  "flex-direction",
+  "font-family",
+  "font-size",
+  "font-style",
+  "font-weight",
+  "gap",
+  "height",
+  "justify-content",
+  "line-height",
+  "list-style-position",
+  "list-style-type",
+  "margin",
+  "margin-top",
+  "margin-right",
+  "margin-bottom",
+  "margin-left",
+  "max-width",
+  "min-width",
+  "opacity",
+  "overflow",
+  "overflow-x",
+  "overflow-y",
+  "padding",
+  "padding-top",
+  "padding-right",
+  "padding-bottom",
+  "padding-left",
+  "text-align",
+  "text-decoration",
+  "tab-size",
+  "vertical-align",
+  "white-space",
+  "width",
+  "word-break",
+  "word-wrap",
+];
+
+const HTML_STYLE_VARIABLES = [
+  "--callout-color",
+  "--callout-icon",
+  "--code-background",
+  "--code-normal",
+  "--table-border-color",
+  "--table-header-background",
+  "--table-header-color",
+  "--table-row-alt-background",
+  "--text-normal",
+  "--text-muted",
+];
+
 export default class OwenExporterPlugin extends Plugin {
   settings: OwenExporterSettings;
 
@@ -534,10 +627,15 @@ export default class OwenExporterPlugin extends Plugin {
   }
 
   private async renderMarkdownToHtml(markdown: string, sourcePath: string): Promise<string> {
-    const container = document.createElement("div");
-    container.addClass("owen-exporter-render-root");
-    await MarkdownRenderer.render(this.app, markdown, container, sourcePath, this);
-    return container.innerHTML.trim();
+    const container = this.createHiddenMarkdownRenderHost();
+    document.body.appendChild(container);
+    try {
+      await MarkdownRenderer.render(this.app, markdown, container, sourcePath, this);
+      this.inlinePreviewStyles(container);
+      return container.innerHTML.trim();
+    } finally {
+      container.remove();
+    }
   }
 
   private wrapHtmlDocument(fragment: string): string {
@@ -568,9 +666,64 @@ export default class OwenExporterPlugin extends Plugin {
   }
 
   private getSelectedHtmlFragment(range: Range): string {
-    const container = document.createElement("div");
+    const container = this.createHiddenMarkdownRenderHost();
     container.appendChild(range.cloneContents());
-    return container.innerHTML.trim();
+    document.body.appendChild(container);
+    try {
+      this.inlinePreviewStyles(container);
+      return container.innerHTML.trim();
+    } finally {
+      container.remove();
+    }
+  }
+
+  private createHiddenMarkdownRenderHost(): HTMLDivElement {
+    const container = document.createElement("div");
+    container.addClass("owen-exporter-render-root");
+    container.addClass("markdown-preview-view");
+    container.addClass("markdown-rendered");
+    container.setAttribute("aria-hidden", "true");
+    container.style.position = "fixed";
+    container.style.left = "-10000px";
+    container.style.top = "0";
+    container.style.width = this.getActiveMarkdownWidth();
+    container.style.pointerEvents = "none";
+    container.style.visibility = "hidden";
+    return container;
+  }
+
+  private getActiveMarkdownWidth(): string {
+    const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const sourceWidth = activeView?.contentEl?.getBoundingClientRect().width;
+    if (sourceWidth && sourceWidth > 0) {
+      return `${Math.round(sourceWidth)}px`;
+    }
+    return "760px";
+  }
+
+  private inlinePreviewStyles(container: HTMLElement) {
+    this.inlineElementStyle(container);
+    const elements = Array.from(container.querySelectorAll<HTMLElement>(HTML_STYLE_SELECTOR));
+    for (const element of elements) {
+      this.inlineElementStyle(element);
+    }
+  }
+
+  private inlineElementStyle(element: HTMLElement) {
+    const computed = window.getComputedStyle(element);
+    const style = element.style;
+    for (const property of HTML_STYLE_PROPERTIES) {
+      const value = computed.getPropertyValue(property);
+      if (value) {
+        style.setProperty(property, value);
+      }
+    }
+    for (const variable of HTML_STYLE_VARIABLES) {
+      const value = computed.getPropertyValue(variable);
+      if (value) {
+        style.setProperty(variable, value);
+      }
+    }
   }
 
   private htmlToPlainText(html: string): string {
