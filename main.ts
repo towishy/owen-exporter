@@ -1,3 +1,5 @@
+import { remote } from "electron";
+import { writeFile } from "fs/promises";
 import {
     App,
     Component,
@@ -6,6 +8,7 @@ import {
     MarkdownView,
     Menu,
     Notice,
+    Platform,
     Plugin,
     PluginSettingTab,
     Setting,
@@ -487,6 +490,10 @@ export default class OwenExporterPlugin extends Plugin {
   }
 
   private async saveBlobWithPicker(blob: Blob, filename: string, mimeType: string, extension: string) {
+    if (Platform.isDesktopApp && await this.saveBlobWithElectronDialog(blob, filename, extension)) {
+      return;
+    }
+
     const savePicker = (window as WindowWithSavePicker).showSaveFilePicker;
     if (savePicker) {
       const handle = await savePicker({
@@ -505,6 +512,26 @@ export default class OwenExporterPlugin extends Plugin {
     }
 
     this.downloadBlobWithAnchor(blob, filename);
+  }
+
+  private async saveBlobWithElectronDialog(blob: Blob, filename: string, extension: string): Promise<boolean> {
+    const dialog = remote?.dialog;
+    if (!dialog) {
+      return false;
+    }
+
+    const result = await dialog.showSaveDialog({
+      title: "Save SVG export",
+      defaultPath: filename,
+      filters: [{ name: `${extension.toUpperCase()} image`, extensions: [extension] }],
+    });
+    if (result.canceled || !result.filePath) {
+      throw new DOMException("Save cancelled", "AbortError");
+    }
+
+    const buffer = new Uint8Array(await blob.arrayBuffer());
+    await writeFile(result.filePath, buffer);
+    return true;
   }
 
   private downloadBlobWithAnchor(blob: Blob, filename: string) {
@@ -820,7 +847,6 @@ class OwenExporterSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    new Setting(containerEl).setName("Export options").setHeading();
 
     new Setting(containerEl)
       .setName("Default image format")
