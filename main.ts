@@ -4,6 +4,7 @@ import {
     App,
     Component,
     Editor,
+    FileSystemAdapter,
     MarkdownRenderer,
     MarkdownView,
     Menu,
@@ -413,16 +414,19 @@ export default class OwenExporterPlugin extends Plugin {
   }
 
   private getImageVaultPath(image: HTMLImageElement): string | null {
-    const source = image.getAttribute("src") || image.currentSrc || image.src;
-    const resourcePath = image.getAttribute("data-path") || image.getAttribute("alt");
-    if (resourcePath?.toLowerCase().endsWith(".svg")) {
-      return normalizePath(resourcePath);
-    }
+    const candidates = [
+      image.getAttribute("data-path"),
+      image.getAttribute("alt"),
+      image.getAttribute("src"),
+      image.currentSrc,
+      image.src,
+    ];
 
-    const decodedSource = this.decodeUri(source);
-    const sourcePath = this.extractSvgPath(decodedSource);
-    if (sourcePath) {
-      return sourcePath;
+    for (const candidate of candidates) {
+      const vaultPath = this.extractSvgVaultPath(candidate ?? "");
+      if (vaultPath) {
+        return vaultPath;
+      }
     }
     return null;
   }
@@ -435,17 +439,77 @@ export default class OwenExporterPlugin extends Plugin {
     }
   }
 
-  private extractSvgPath(source: string): string | null {
-    const pathMatch = source.match(/[?&](?:path|file)=([^&#]+\.svg)(?:[&#]|$)/i);
-    if (pathMatch) {
-      return normalizePath(this.decodeUriComponent(pathMatch[1]));
+  private extractSvgVaultPath(source: string): string | null {
+    if (!source) {
+      return null;
     }
 
-    const svgMatch = source.match(/(?:^|[/\\])([^?#]+\.svg)(?:[?#]|$)/i);
+    const decodedSource = this.decodeUri(source);
+    const directPath = this.toExistingSvgVaultPath(decodedSource);
+    if (directPath) {
+      return directPath;
+    }
+
+    const pathMatch = decodedSource.match(/[?&](?:path|file)=([^&#]+\.svg)(?:[&#]|$)/i);
+    if (pathMatch) {
+      const queryPath = this.toExistingSvgVaultPath(this.decodeUriComponent(pathMatch[1]));
+      if (queryPath) {
+        return queryPath;
+      }
+    }
+
+    const localUrlPath = this.getLocalPathFromUrl(decodedSource);
+    if (localUrlPath) {
+      const vaultPath = this.toExistingSvgVaultPath(localUrlPath);
+      if (vaultPath) {
+        return vaultPath;
+      }
+    }
+
+    const svgMatch = decodedSource.match(/(?:^|[/\\])([^?#]+\.svg)(?:[?#]|$)/i);
     if (svgMatch) {
-      return normalizePath(svgMatch[1]);
+      return this.toExistingSvgVaultPath(svgMatch[1]);
     }
     return null;
+  }
+
+  private toExistingSvgVaultPath(path: string): string | null {
+    const normalized = normalizePath(path.replace(/^\/+([A-Za-z]:\/)/, "$1"));
+    if (!normalized.toLowerCase().endsWith(".svg")) {
+      return null;
+    }
+
+    if (this.app.vault.getAbstractFileByPath(normalized) instanceof TFile) {
+      return normalized;
+    }
+
+    const adapter = this.app.vault.adapter;
+    if (!(adapter instanceof FileSystemAdapter)) {
+      return null;
+    }
+
+    const basePath = normalizePath(adapter.getBasePath());
+    if (normalized === basePath) {
+      return null;
+    }
+    if (!normalized.startsWith(`${basePath}/`)) {
+      return null;
+    }
+
+    const vaultPath = normalizePath(normalized.slice(basePath.length + 1));
+    return this.app.vault.getAbstractFileByPath(vaultPath) instanceof TFile ? vaultPath : null;
+  }
+
+  private getLocalPathFromUrl(source: string): string | null {
+    try {
+      const url = new URL(source);
+      if (url.protocol !== "app:" && url.protocol !== "file:") {
+        return null;
+      }
+      return this.decodeUriComponent(url.pathname).replace(/^\/+([A-Za-z]:\/)/, "$1");
+    } catch {
+      return null;
+    }
   }
 
   private decodeUriComponent(value: string): string {
@@ -558,7 +622,12 @@ export default class OwenExporterPlugin extends Plugin {
       }
     }
 
-    const response = await requestUrl({ url: target.element.currentSrc || target.element.src });
+    const source = target.element.currentSrc || target.element.src;
+    if (!/^https?:\/\//i.test(source)) {
+      throw new Error("Unable to resolve local SVG file path");
+    }
+
+    const response = await requestUrl({ url: source });
     if (response.status < 200 || response.status >= 300) {
       throw new Error(`Unable to read SVG image (${response.status})`);
     }
