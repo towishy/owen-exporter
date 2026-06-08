@@ -1,4 +1,5 @@
 node_modules/
+.test-cache/
 main.js
 data.json
 .DS_Store

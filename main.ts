@@ -17,18 +17,32 @@ import {
     normalizePath,
     requestUrl,
 } from "obsidian";
+import {
+    getSvgDimensionsFromText,
+    nextAvailableVaultPath,
+    normalizeVaultFolder,
+    renderFilenameTemplate,
+    slugifyExportName,
+} from "./core";
 
 type ExportImageFormat = "png" | "jpeg";
+type ImageSaveMode = "dialog" | "vault";
 type HtmlSaveMode = "fragment" | "document";
+type HtmlStyleMode = "obsidian" | "portable" | "clean";
 
 interface OwenExporterSettings {
   imageFormat: ExportImageFormat;
+  imageSaveMode: ImageSaveMode;
   imageQuality: number;
   imageScale: number;
   imageBackground: string;
   imageOutputFolder: string;
+  imageFilenameTemplate: string;
   htmlOutputFolder: string;
+  htmlFilenameTemplate: string;
   htmlSaveMode: HtmlSaveMode;
+  htmlStyleMode: HtmlStyleMode;
+  htmlDocumentTitle: string;
 }
 
 interface SvgTarget {
@@ -39,11 +53,6 @@ interface SvgTarget {
 
 interface MarkdownSourceInfo {
   file?: TFile | null;
-}
-
-interface SvgDimensions {
-  width: number;
-  height: number;
 }
 
 interface SaveFilePickerOptions {
@@ -69,13 +78,20 @@ interface WindowWithSavePicker extends Window {
 
 const DEFAULT_SETTINGS: OwenExporterSettings = {
   imageFormat: "png",
+  imageSaveMode: "dialog",
   imageQuality: 0.92,
   imageScale: 2,
   imageBackground: "#FFFFFF",
   imageOutputFolder: "exports/images",
+  imageFilenameTemplate: "{{name}}",
   htmlOutputFolder: "exports/html",
+  htmlFilenameTemplate: "{{name}}",
   htmlSaveMode: "document",
+  htmlStyleMode: "obsidian",
+  htmlDocumentTitle: "{{name}} export",
 };
+
+const MAX_CANVAS_PIXELS = 100_000_000;
 
 const HTML_STYLE_SELECTOR = [
   "table",
@@ -158,6 +174,38 @@ const HTML_STYLE_PROPERTIES = [
   "word-wrap",
 ];
 
+const HTML_PORTABLE_STYLE_PROPERTIES = [
+  "background-color",
+  "border",
+  "border-collapse",
+  "border-radius",
+  "box-sizing",
+  "color",
+  "font-family",
+  "font-size",
+  "font-style",
+  "font-weight",
+  "line-height",
+  "list-style-position",
+  "list-style-type",
+  "margin",
+  "margin-top",
+  "margin-right",
+  "margin-bottom",
+  "margin-left",
+  "padding",
+  "padding-top",
+  "padding-right",
+  "padding-bottom",
+  "padding-left",
+  "text-align",
+  "text-decoration",
+  "vertical-align",
+  "white-space",
+  "word-break",
+  "word-wrap",
+];
+
 const HTML_STYLE_VARIABLES = [
   "--callout-color",
   "--callout-icon",
@@ -204,6 +252,36 @@ export default class OwenExporterPlugin extends Plugin {
         }
         if (!checking) {
           void this.saveSelectionAsHtml(editor, view);
+        }
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: "save-current-note-as-html",
+      name: "Save current note as HTML file",
+      checkCallback: (checking) => {
+        const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+        if (!view?.file) {
+          return false;
+        }
+        if (!checking) {
+          void this.saveCurrentNoteAsHtml(view);
+        }
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: "export-current-note-svgs",
+      name: "Export all SVG embeds in current note",
+      checkCallback: (checking) => {
+        const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+        if (!view?.file) {
+          return false;
+        }
+        if (!checking) {
+          void this.exportCurrentNoteSvgs(view);
         }
         return true;
       },
@@ -537,13 +615,13 @@ export default class OwenExporterPlugin extends Plugin {
       const svgText = this.ensureSvgNamespace(await this.getSvgText(target));
       const raster = await this.rasterizeSvg(svgText, format);
       const extension = format === "jpeg" ? "jpg" : "png";
-      const baseName = this.slugify(target.suggestedName.replace(/\.svg$/i, ""));
-      const filename = `${baseName}.${extension}`;
+      const baseName = target.suggestedName.replace(/\.svg$/i, "");
+      const filename = this.buildImageFilename(baseName, format, extension);
       const mimeType = format === "jpeg" ? "image/jpeg" : "image/png";
       const blob = new Blob([raster], { type: mimeType });
 
-      await this.saveBlobWithPicker(blob, filename, mimeType, extension);
-      new Notice(`Saved ${format.toUpperCase()} export: ${filename}`);
+      const savedPath = await this.saveImageBlob(blob, filename, mimeType, extension);
+      new Notice(`Saved ${format.toUpperCase()} export: ${savedPath ?? filename}`);
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
         return;
@@ -551,6 +629,27 @@ export default class OwenExporterPlugin extends Plugin {
       console.error(error);
       new Notice(`Failed to export SVG: ${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+
+  private buildImageFilename(baseName: string, format: ExportImageFormat, extension: string): string {
+    const filename = renderFilenameTemplate(this.settings.imageFilenameTemplate, this.getFilenameTokens(baseName, format), baseName);
+    return `${filename}.${extension}`;
+  }
+
+  private async saveImageBlob(blob: Blob, filename: string, mimeType: string, extension: string): Promise<string | null> {
+    if (this.settings.imageSaveMode === "vault") {
+      return this.saveImageBlobToVault(blob, filename);
+    }
+
+    await this.saveBlobWithPicker(blob, filename, mimeType, extension);
+    return null;
+  }
+
+  private async saveImageBlobToVault(blob: Blob, filename: string): Promise<string> {
+    await this.ensureFolder(this.settings.imageOutputFolder);
+    const outputPath = await this.nextAvailablePath(this.settings.imageOutputFolder, filename);
+    await this.app.vault.adapter.writeBinary(outputPath, await blob.arrayBuffer());
+    return outputPath;
   }
 
   private async saveBlobWithPicker(blob: Blob, filename: string, mimeType: string, extension: string) {
@@ -636,19 +735,23 @@ export default class OwenExporterPlugin extends Plugin {
 
   private async rasterizeSvg(svgText: string, format: ExportImageFormat): Promise<ArrayBuffer> {
     const image = activeDocument.createElement("img");
-    const dimensions = this.getSvgDimensions(svgText);
+    this.assertParsableSvg(svgText);
+    const dimensions = getSvgDimensionsFromText(svgText);
+    const scale = this.getImageScale();
+    const hasExternalReferences = this.hasExternalSvgReferences(svgText);
     const blob = new Blob([svgText], { type: "image/svg+xml;charset=utf-8" });
     const objectUrl = URL.createObjectURL(blob);
 
     try {
       await new Promise<HTMLImageElement>((resolve, reject) => {
         image.onload = () => resolve(image);
-        image.onerror = () => reject(new Error("Browser could not rasterize this SVG"));
+        image.onerror = () => reject(new Error("Browser could not rasterize this SVG. Check for malformed SVG markup or blocked external resources."));
         image.src = objectUrl;
       });
 
-      const width = Math.max(1, Math.round(dimensions.width * this.settings.imageScale));
-      const height = Math.max(1, Math.round(dimensions.height * this.settings.imageScale));
+      const width = Math.max(1, Math.round(dimensions.width * scale));
+      const height = Math.max(1, Math.round(dimensions.height * scale));
+      this.assertCanvasSize(width, height);
       const canvas = activeDocument.createElement("canvas");
       canvas.width = width;
       canvas.height = height;
@@ -658,23 +761,78 @@ export default class OwenExporterPlugin extends Plugin {
       }
 
       if (format === "jpeg" || this.settings.imageBackground.trim().toLowerCase() !== "transparent") {
+        if (!this.isValidCssColor(this.settings.imageBackground)) {
+          throw new Error(`Invalid image background color: ${this.settings.imageBackground}`);
+        }
         context.fillStyle = this.settings.imageBackground || "#FFFFFF";
         context.fillRect(0, 0, width, height);
       }
 
-      context.drawImage(image, 0, 0, width, height);
-      const mimeType = format === "jpeg" ? "image/jpeg" : "image/png";
-      const outputBlob = await new Promise<Blob>((resolve, reject) => {
-        canvas.toBlob(
-          (result) => (result ? resolve(result) : reject(new Error("Canvas export failed"))),
-          mimeType,
-          this.settings.imageQuality,
-        );
-      });
+      let outputBlob: Blob;
+      try {
+        context.drawImage(image, 0, 0, width, height);
+        const mimeType = format === "jpeg" ? "image/jpeg" : "image/png";
+        outputBlob = await new Promise<Blob>((resolve, reject) => {
+          canvas.toBlob(
+            (result) => (result ? resolve(result) : reject(new Error("Canvas export failed"))),
+            mimeType,
+            this.getImageQuality(),
+          );
+        });
+      } catch (error) {
+        if (hasExternalReferences) {
+          throw new Error("Canvas export was blocked. This SVG references external images, fonts, or styles that may need to be embedded first.");
+        }
+        throw error;
+      }
       return outputBlob.arrayBuffer();
     } finally {
       URL.revokeObjectURL(objectUrl);
     }
+  }
+
+  private assertParsableSvg(svgText: string) {
+    const parsedDocument = new DOMParser().parseFromString(svgText, "image/svg+xml");
+    if (parsedDocument.querySelector("parsererror")) {
+      throw new Error("Invalid SVG markup. The file could not be parsed as XML.");
+    }
+    if (!parsedDocument.querySelector("svg")) {
+      throw new Error("Invalid SVG markup. No <svg> root element was found.");
+    }
+  }
+
+  private getImageScale(): number {
+    const scale = Number(this.settings.imageScale);
+    return Number.isFinite(scale) && scale > 0 ? scale : DEFAULT_SETTINGS.imageScale;
+  }
+
+  private getImageQuality(): number {
+    const quality = Number(this.settings.imageQuality);
+    if (!Number.isFinite(quality)) {
+      return DEFAULT_SETTINGS.imageQuality;
+    }
+    return Math.min(1, Math.max(0.1, quality));
+  }
+
+  private assertCanvasSize(width: number, height: number) {
+    const pixels = width * height;
+    if (pixels > MAX_CANVAS_PIXELS) {
+      throw new Error(`Export is too large (${width}x${height}). Lower the image scale and try again.`);
+    }
+  }
+
+  private hasExternalSvgReferences(svgText: string): boolean {
+    return /(?:href|xlink:href)=["']https?:\/\//i.test(svgText) || /url\(["']?https?:\/\//i.test(svgText) || /@import\s+url\(["']?https?:\/\//i.test(svgText);
+  }
+
+  private isValidCssColor(value: string): boolean {
+    const color = value.trim();
+    if (!color || color.toLowerCase() === "transparent") {
+      return true;
+    }
+    const option = new Option();
+    option.style.color = color;
+    return Boolean(option.style.color);
   }
 
   private ensureSvgNamespace(svgText: string): string {
@@ -682,31 +840,6 @@ export default class OwenExporterPlugin extends Plugin {
       return svgText;
     }
     return svgText.replace("<svg", '<svg xmlns="http://www.w3.org/2000/svg"');
-  }
-
-  private getSvgDimensions(svgText: string): SvgDimensions {
-    const parsedDocument = new DOMParser().parseFromString(svgText, "image/svg+xml");
-    const svg = parsedDocument.querySelector("svg");
-    const width = this.parseSvgLength(svg?.getAttribute("width"));
-    const height = this.parseSvgLength(svg?.getAttribute("height"));
-    if (width && height) {
-      return { width, height };
-    }
-
-    const viewBox = svg?.getAttribute("viewBox")?.trim().split(/[\s,]+/).map(Number);
-    if (viewBox?.length === 4 && Number.isFinite(viewBox[2]) && Number.isFinite(viewBox[3]) && viewBox[2] > 0 && viewBox[3] > 0) {
-      return { width: viewBox[2], height: viewBox[3] };
-    }
-
-    return { width: 1000, height: 1000 };
-  }
-
-  private parseSvgLength(value: string | null | undefined): number | null {
-    if (!value) {
-      return null;
-    }
-    const numeric = Number.parseFloat(value);
-    return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
   }
 
   private async copySelectionAsHtml(editor: Editor, view: MarkdownSourceInfo) {
@@ -717,6 +850,15 @@ export default class OwenExporterPlugin extends Plugin {
   private async saveSelectionAsHtml(editor: Editor, view: MarkdownSourceInfo) {
     const html = await this.renderMarkdownToHtml(editor.getSelection(), view.file?.path ?? "");
     await this.saveHtmlToFile(html, view.file?.path ?? null, "selection");
+  }
+
+  private async saveCurrentNoteAsHtml(view: MarkdownView) {
+    if (!view.file) {
+      return;
+    }
+    const markdown = await this.app.vault.read(view.file);
+    const html = await this.renderMarkdownToHtml(markdown, view.file.path);
+    await this.saveHtmlToFile(html, view.file.path, "note");
   }
 
   private async renderMarkdownToHtml(markdown: string, sourcePath: string): Promise<string> {
@@ -734,20 +876,29 @@ export default class OwenExporterPlugin extends Plugin {
     }
   }
 
-  private wrapHtmlDocument(fragment: string): string {
-    return `<!doctype html>\n<html>\n<head>\n<meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1">\n<title>Obsidian selection export</title>\n</head>\n<body>\n${fragment}\n</body>\n</html>\n`;
+  private wrapHtmlDocument(fragment: string, title: string): string {
+    return `<!doctype html>\n<html>\n<head>\n<meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1">\n<title>${this.escapeHtml(title)}</title>\n</head>\n<body>\n${fragment}\n</body>\n</html>\n`;
+  }
+
+  private escapeHtml(value: string): string {
+    return value
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
   }
 
   private async copyHtmlToClipboard(html: string) {
+    const plainText = this.htmlToPlainText(html);
     if (navigator.clipboard && "write" in navigator.clipboard && typeof ClipboardItem !== "undefined") {
       await navigator.clipboard.write([
         new ClipboardItem({
           "text/html": new Blob([html], { type: "text/html" }),
-          "text/plain": new Blob([html], { type: "text/plain" }),
+          "text/plain": new Blob([plainText], { type: "text/plain" }),
         }),
       ]);
     } else {
-      await navigator.clipboard.writeText(html);
+      await navigator.clipboard.writeText(plainText);
     }
     new Notice("Copied selection as HTML");
   }
@@ -755,10 +906,19 @@ export default class OwenExporterPlugin extends Plugin {
   private async saveHtmlToFile(html: string, sourcePath: string | null, fallbackName: string) {
     await this.ensureFolder(this.settings.htmlOutputFolder);
     const baseName = sourcePath ? this.basename(sourcePath) : fallbackName;
-    const outputPath = await this.nextAvailablePath(this.settings.htmlOutputFolder, `${this.slugify(baseName)}.html`);
-    const content = this.settings.htmlSaveMode === "document" ? this.wrapHtmlDocument(html) : html;
+    const tokens = this.getFilenameTokens(baseName, "html");
+    const filename = `${renderFilenameTemplate(this.settings.htmlFilenameTemplate, tokens, baseName)}.html`;
+    const outputPath = await this.nextAvailablePath(this.settings.htmlOutputFolder, filename);
+    const title = this.renderTextTemplate(this.settings.htmlDocumentTitle, tokens, `${baseName} export`);
+    const content = this.settings.htmlSaveMode === "document" ? this.wrapHtmlDocument(html, title) : html;
     await this.app.vault.adapter.write(outputPath, content);
     new Notice(`Saved HTML export: ${outputPath}`);
+  }
+
+  private htmlToPlainText(html: string): string {
+    const container = activeDocument.createElement("div");
+    container.innerHTML = html;
+    return container.innerText.trim() || container.textContent?.trim() || "";
   }
 
   private getSelectedHtmlFragment(range: Range): string {
@@ -779,6 +939,7 @@ export default class OwenExporterPlugin extends Plugin {
     container.addClass("markdown-preview-view");
     container.addClass("markdown-rendered");
     container.setAttribute("aria-hidden", "true");
+    container.style.width = this.getActiveMarkdownWidth();
     return container;
   }
 
@@ -792,30 +953,47 @@ export default class OwenExporterPlugin extends Plugin {
   }
 
   private inlinePreviewStyles(container: HTMLElement) {
-    this.inlineElementStyle(container);
+    if (this.settings.htmlStyleMode === "clean") {
+      this.stripInlineStyles(container);
+      return;
+    }
+
+    const properties = this.settings.htmlStyleMode === "portable" ? HTML_PORTABLE_STYLE_PROPERTIES : HTML_STYLE_PROPERTIES;
+    const includeVariables = this.settings.htmlStyleMode === "obsidian";
+    this.inlineElementStyle(container, properties, includeVariables);
     const elements = Array.from(container.querySelectorAll<HTMLElement>(HTML_STYLE_SELECTOR));
     for (const element of elements) {
-      this.inlineElementStyle(element);
+      this.inlineElementStyle(element, properties, includeVariables);
     }
   }
 
-  private inlineElementStyle(element: HTMLElement) {
+  private inlineElementStyle(element: HTMLElement, properties: string[], includeVariables: boolean) {
     const computed = activeWindow.getComputedStyle(element);
     const styles: Record<string, string> = {};
-    for (const property of HTML_STYLE_PROPERTIES) {
+    for (const property of properties) {
       const value = computed.getPropertyValue(property);
       if (value) {
         styles[property] = value;
       }
     }
-    for (const variable of HTML_STYLE_VARIABLES) {
-      const value = computed.getPropertyValue(variable);
-      if (value) {
-        styles[variable] = value;
+    if (includeVariables) {
+      for (const variable of HTML_STYLE_VARIABLES) {
+        const value = computed.getPropertyValue(variable);
+        if (value) {
+          styles[variable] = value;
+        }
       }
     }
     this.normalizePortableHtmlStyles(element, styles);
     element.setCssProps(styles);
+  }
+
+  private stripInlineStyles(container: HTMLElement) {
+    container.removeAttribute("style");
+    const styledElements = Array.from(container.querySelectorAll<HTMLElement>("[style]"));
+    for (const element of styledElements) {
+      element.removeAttribute("style");
+    }
   }
 
   private normalizePortableHtmlStyles(element: HTMLElement, styles: Record<string, string>) {
@@ -856,6 +1034,84 @@ export default class OwenExporterPlugin extends Plugin {
     }
   }
 
+  private async exportCurrentNoteSvgs(view: MarkdownView) {
+    if (!view.file) {
+      return;
+    }
+
+    const markdown = await this.app.vault.read(view.file);
+    const files = this.getSvgFilesFromMarkdown(markdown, view.file.path);
+    if (!files.length) {
+      new Notice("No SVG embeds found in the current note");
+      return;
+    }
+
+    let savedCount = 0;
+    const failures: string[] = [];
+    const format = this.settings.imageFormat;
+    const extension = format === "jpeg" ? "jpg" : "png";
+    const mimeType = format === "jpeg" ? "image/jpeg" : "image/png";
+
+    for (const file of files) {
+      try {
+        const svgText = this.ensureSvgNamespace(await this.app.vault.read(file));
+        const raster = await this.rasterizeSvg(svgText, format);
+        const filename = this.buildImageFilename(this.basename(file.path), format, extension);
+        const blob = new Blob([raster], { type: mimeType });
+        await this.saveImageBlobToVault(blob, filename);
+        savedCount += 1;
+      } catch (error) {
+        failures.push(`${file.path}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
+    if (failures.length) {
+      console.warn("Owen Exporter SVG batch export failures", failures);
+      new Notice(`Exported ${savedCount}/${files.length} SVGs. Check the console for failed files.`);
+      return;
+    }
+
+    new Notice(`Exported ${savedCount} SVGs to ${normalizeVaultFolder(this.settings.imageOutputFolder) || "the vault root"}`);
+  }
+
+  private getSvgFilesFromMarkdown(markdown: string, sourcePath: string): TFile[] {
+    const links = new Set<string>();
+    const files: TFile[] = [];
+    const addLink = (rawLink: string) => {
+      const link = this.cleanSvgLink(rawLink);
+      if (!link || links.has(link)) {
+        return;
+      }
+      const file = this.app.metadataCache.getFirstLinkpathDest(link, sourcePath);
+      if (file instanceof TFile && file.extension.toLowerCase() === "svg") {
+        links.add(link);
+        files.push(file);
+      }
+    };
+
+    for (const match of markdown.matchAll(/!\[\[([^\]|#]+\.svg)(?:[#|][^\]]*)?\]\]/gi)) {
+      addLink(match[1]);
+    }
+    for (const match of markdown.matchAll(/!\[[^\]]*\]\(([^)]+\.svg(?:[?#][^)]*)?)\)/gi)) {
+      addLink(match[1]);
+    }
+
+    return files;
+  }
+
+  private cleanSvgLink(rawLink: string): string | null {
+    const link = rawLink.trim().replace(/^<|>$/g, "");
+    if (/^[a-z]+:\/\//i.test(link)) {
+      return null;
+    }
+    const withoutQuery = link.replace(/[?#].*$/, "");
+    try {
+      return decodeURIComponent(withoutQuery);
+    } catch {
+      return withoutQuery;
+    }
+  }
+
   private getActiveSourcePath(): string | null {
     const view = this.app.workspace.getActiveViewOfType(MarkdownView);
     return view?.file?.path ?? null;
@@ -866,16 +1122,45 @@ export default class OwenExporterPlugin extends Plugin {
   }
 
   private slugify(value: string): string {
-    const slug = value
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9가-힣._-]+/gi, "-")
-      .replace(/^-+|-+$/g, "");
-    return slug || "export";
+    return slugifyExportName(value);
+  }
+
+  private getFilenameTokens(name: string, format: string): Record<string, string | number> {
+    const now = new Date();
+    return {
+      name: this.slugify(name),
+      rawName: name,
+      format,
+      scale: this.getImageScale(),
+      date: this.formatDate(now),
+      time: this.formatTime(now),
+    };
+  }
+
+  private renderTextTemplate(template: string, tokens: Record<string, string | number>, fallback: string): string {
+    const rendered = (template.trim() || fallback).replace(/\{\{\s*([a-zA-Z0-9_-]+)\s*\}\}/g, (_match, key: string) => {
+      const value = tokens[key];
+      return value === undefined ? "" : String(value);
+    });
+    return rendered.trim() || fallback;
+  }
+
+  private formatDate(date: Date): string {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+
+  private formatTime(date: Date): string {
+    const hours = String(date.getHours()).padStart(2, "0");
+    const minutes = String(date.getMinutes()).padStart(2, "0");
+    const seconds = String(date.getSeconds()).padStart(2, "0");
+    return `${hours}-${minutes}-${seconds}`;
   }
 
   private async ensureFolder(folder: string) {
-    const normalized = normalizePath(folder.trim().replace(/^\/+|\/+$/g, ""));
+    const normalized = normalizePath(normalizeVaultFolder(folder));
     if (!normalized) {
       return;
     }
@@ -891,17 +1176,7 @@ export default class OwenExporterPlugin extends Plugin {
   }
 
   private async nextAvailablePath(folder: string, filename: string): Promise<string> {
-    const normalizedFolder = normalizePath(folder.trim().replace(/^\/+|\/+$/g, ""));
-    const dotIndex = filename.lastIndexOf(".");
-    const name = dotIndex >= 0 ? filename.slice(0, dotIndex) : filename;
-    const extension = dotIndex >= 0 ? filename.slice(dotIndex) : "";
-    let candidate = normalizePath(normalizedFolder ? `${normalizedFolder}/${filename}` : filename);
-    let counter = 2;
-    while (await this.app.vault.adapter.exists(candidate)) {
-      candidate = normalizePath(normalizedFolder ? `${normalizedFolder}/${name}-${counter}${extension}` : `${name}-${counter}${extension}`);
-      counter += 1;
-    }
-    return candidate;
+    return normalizePath(await nextAvailableVaultPath(folder, filename, (path) => this.app.vault.adapter.exists(normalizePath(path))));
   }
 }
 
@@ -927,6 +1202,46 @@ class OwenExporterSettingTab extends PluginSettingTab {
           .setValue(this.plugin.settings.imageFormat)
           .onChange(async (value: ExportImageFormat) => {
             this.plugin.settings.imageFormat = value;
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Image save location")
+      .setDesc("Ask for a save location or save directly into a vault folder.")
+      .addDropdown((dropdown) => {
+        dropdown
+          .addOption("dialog", "Ask every time")
+          .addOption("vault", "Save to vault folder")
+          .setValue(this.plugin.settings.imageSaveMode)
+          .onChange(async (value: ImageSaveMode) => {
+            this.plugin.settings.imageSaveMode = value;
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Image output folder")
+      .setDesc("Vault-relative folder for direct SVG image exports and batch exports.")
+      .addText((text) => {
+        text
+          .setPlaceholder("exports/images")
+          .setValue(this.plugin.settings.imageOutputFolder)
+          .onChange(async (value) => {
+            this.plugin.settings.imageOutputFolder = value.trim() || DEFAULT_SETTINGS.imageOutputFolder;
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Image filename template")
+      .setDesc("Supports {{name}}, {{rawName}}, {{format}}, {{scale}}, {{date}}, and {{time}}.")
+      .addText((text) => {
+        text
+          .setPlaceholder("{{name}}")
+          .setValue(this.plugin.settings.imageFilenameTemplate)
+          .onChange(async (value) => {
+            this.plugin.settings.imageFilenameTemplate = value.trim() || DEFAULT_SETTINGS.imageFilenameTemplate;
             await this.plugin.saveSettings();
           });
       });
@@ -986,6 +1301,19 @@ class OwenExporterSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
+      .setName("HTML filename template")
+      .setDesc("Supports {{name}}, {{rawName}}, {{format}}, {{date}}, and {{time}}.")
+      .addText((text) => {
+        text
+          .setPlaceholder("{{name}}")
+          .setValue(this.plugin.settings.htmlFilenameTemplate)
+          .onChange(async (value) => {
+            this.plugin.settings.htmlFilenameTemplate = value.trim() || DEFAULT_SETTINGS.htmlFilenameTemplate;
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
       .setName("HTML save mode")
       .setDesc("Save a full HTML document or only the rendered selection fragment.")
       .addDropdown((dropdown) => {
@@ -995,6 +1323,34 @@ class OwenExporterSettingTab extends PluginSettingTab {
           .setValue(this.plugin.settings.htmlSaveMode)
           .onChange(async (value: HtmlSaveMode) => {
             this.plugin.settings.htmlSaveMode = value;
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("HTML style mode")
+      .setDesc("Choose how much of the active Obsidian preview styling is inlined.")
+      .addDropdown((dropdown) => {
+        dropdown
+          .addOption("obsidian", "Obsidian-like")
+          .addOption("portable", "Portable")
+          .addOption("clean", "Clean HTML")
+          .setValue(this.plugin.settings.htmlStyleMode)
+          .onChange(async (value: HtmlStyleMode) => {
+            this.plugin.settings.htmlStyleMode = value;
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("HTML document title")
+      .setDesc("Title used for full HTML documents. Supports the same filename tokens.")
+      .addText((text) => {
+        text
+          .setPlaceholder("{{name}} export")
+          .setValue(this.plugin.settings.htmlDocumentTitle)
+          .onChange(async (value) => {
+            this.plugin.settings.htmlDocumentTitle = value.trim() || DEFAULT_SETTINGS.htmlDocumentTitle;
             await this.plugin.saveSettings();
           });
       });
