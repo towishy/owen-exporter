@@ -20,6 +20,7 @@ import {
     setIcon,
 } from "obsidian";
 import {
+    SvgDimensions,
     getSvgDimensionsFromText,
     nextAvailableVaultPath,
     normalizeVaultFolder,
@@ -34,6 +35,7 @@ type HtmlStyleMode = "obsidian" | "portable" | "clean";
 type HtmlClipboardMode = "html-and-text" | "html" | "text";
 type HtmlExportProfile = "custom" | "obsidian-document" | "portable-document" | "clean-fragment";
 type SvgBatchReportMode = "never" | "on-failure" | "always";
+type RecentExportKind = "html-copy" | "html-save" | "image-save" | "report";
 
 interface OwenExporterSettings {
   imageFormat: ExportImageFormat;
@@ -51,6 +53,29 @@ interface OwenExporterSettings {
   htmlClipboardMode: HtmlClipboardMode;
   htmlDocumentTitle: string;
   svgBatchReportMode: SvgBatchReportMode;
+  htmlCustomProfiles: HtmlCustomProfile[];
+  htmlExcludeFrontmatter: boolean;
+  htmlPreserveHeadingIds: boolean;
+  htmlPreserveCalloutClasses: boolean;
+  htmlConvertInternalLinksToObsidianUris: boolean;
+  afterExportOpenFile: boolean;
+  afterExportRevealFile: boolean;
+  afterExportCopyPath: boolean;
+  afterImageExportInsertMarkdownLink: boolean;
+}
+
+interface HtmlCustomProfile {
+  name: string;
+  htmlOutputFolder: string;
+  htmlFilenameTemplate: string;
+  htmlSaveMode: HtmlSaveMode;
+  htmlStyleMode: HtmlStyleMode;
+  htmlClipboardMode: HtmlClipboardMode;
+  htmlDocumentTitle: string;
+  htmlExcludeFrontmatter: boolean;
+  htmlPreserveHeadingIds: boolean;
+  htmlPreserveCalloutClasses: boolean;
+  htmlConvertInternalLinksToObsidianUris: boolean;
 }
 
 interface FilenameTokenOptions {
@@ -76,6 +101,13 @@ interface LastExportResult {
   systemPath?: string;
 }
 
+interface RecentExportEntry extends LastExportResult {
+  id: string;
+  kind: RecentExportKind;
+  label: string;
+  createdAt: string;
+}
+
 interface SvgBatchResult {
   index: number;
   sourcePath: string;
@@ -88,6 +120,32 @@ interface HtmlPreviewOptions {
   html: string;
   onCopy: () => Promise<void>;
   onSave: () => Promise<void>;
+}
+
+interface SvgPreviewOptions {
+  baseName: string;
+  format: ExportImageFormat;
+  sourcePath: string | null;
+  svgText: string;
+  dimensions: SvgDimensions;
+  warnings: string[];
+  filename: string;
+  outputWidth: number;
+  outputHeight: number;
+  background: string;
+  onExport: (format: ExportImageFormat) => Promise<void>;
+}
+
+interface ExporterSettingsFile {
+  version: number;
+  settings: Partial<OwenExporterSettings>;
+}
+
+interface ExportHistoryActions {
+  open(entry: RecentExportEntry): Promise<void>;
+  reveal(entry: RecentExportEntry): Promise<void>;
+  copyPath(entry: RecentExportEntry): Promise<void>;
+  clear(): void;
 }
 
 interface SvgTarget {
@@ -137,7 +195,18 @@ const DEFAULT_SETTINGS: OwenExporterSettings = {
   htmlClipboardMode: "html-and-text",
   htmlDocumentTitle: "{{name}} export",
   svgBatchReportMode: "on-failure",
+  htmlCustomProfiles: [],
+  htmlExcludeFrontmatter: true,
+  htmlPreserveHeadingIds: true,
+  htmlPreserveCalloutClasses: true,
+  htmlConvertInternalLinksToObsidianUris: false,
+  afterExportOpenFile: false,
+  afterExportRevealFile: false,
+  afterExportCopyPath: false,
+  afterImageExportInsertMarkdownLink: false,
 };
+
+const MAX_RECENT_EXPORTS = 10;
 
 const HTML_EXPORT_PROFILES: Record<Exclude<HtmlExportProfile, "custom">, Pick<OwenExporterSettings, "htmlSaveMode" | "htmlStyleMode" | "htmlDocumentTitle">> = {
   "obsidian-document": {
@@ -289,6 +358,7 @@ export default class OwenExporterPlugin extends Plugin {
   settings: OwenExporterSettings;
   private lastExportAction: LastExportAction | null = null;
   private lastExportResult: LastExportResult | null = null;
+  private recentExports: RecentExportEntry[] = [];
 
   async onload() {
     await this.loadSettings();
@@ -365,6 +435,36 @@ export default class OwenExporterPlugin extends Plugin {
         }
         if (!checking) {
           void this.saveCurrentNoteAsHtml(view);
+        }
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: "export-current-folder-notes-as-html",
+      name: "Export current folder notes as HTML",
+      checkCallback: (checking) => {
+        const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+        if (!view?.file) {
+          return false;
+        }
+        if (!checking) {
+          void this.exportCurrentFolderNotesAsHtml(view);
+        }
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: "export-linked-notes-as-html",
+      name: "Export linked notes as HTML",
+      checkCallback: (checking) => {
+        const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+        if (!view?.file) {
+          return false;
+        }
+        if (!checking) {
+          void this.exportLinkedNotesAsHtml(view);
         }
         return true;
       },
@@ -456,6 +556,24 @@ export default class OwenExporterPlugin extends Plugin {
       },
     });
 
+    this.addCommand({
+      id: "show-export-history",
+      name: "Show export history",
+      callback: () => this.openExportHistory(),
+    });
+
+    this.addCommand({
+      id: "export-settings-json",
+      name: "Export Owen Exporter settings JSON",
+      callback: () => void this.exportSettingsJson(),
+    });
+
+    this.addCommand({
+      id: "import-settings-json-from-clipboard",
+      name: "Import Owen Exporter settings JSON from clipboard",
+      callback: () => void this.importSettingsJsonFromClipboard(),
+    });
+
     this.registerEvent(
       this.app.workspace.on("editor-menu", (menu, editor, view) => {
         if (!editor.getSelection().trim()) {
@@ -468,6 +586,7 @@ export default class OwenExporterPlugin extends Plugin {
             .setIcon("copy")
             .onClick(() => void this.copySelectionAsHtml(editor, view));
         });
+        this.addHtmlCopyAsMenuItems(menu, async () => this.renderMarkdownToHtml(editor.getSelection(), view.file?.path ?? ""), view.file?.path ?? null, "selection");
         menu.addItem((item) => {
           item
             .setTitle("Preview selection as HTML")
@@ -509,6 +628,12 @@ export default class OwenExporterPlugin extends Plugin {
       });
       menu.addItem((item) => {
         item
+          .setTitle("Preview SVG export")
+          .setIcon("eye")
+          .onClick(() => void this.previewSvgTarget(svgTarget));
+      });
+      menu.addItem((item) => {
+        item
           .setTitle("Diagnose SVG export")
           .setIcon("search-check")
           .onClick(() => void this.diagnoseSvgTarget(svgTarget));
@@ -529,12 +654,36 @@ export default class OwenExporterPlugin extends Plugin {
     this.lastExportAction = action;
   }
 
-  private recordSavedFile(result: SavedFileResult) {
+  private async recordSavedFile(result: SavedFileResult, kind: RecentExportKind = "html-save", label = result.filename) {
     this.lastExportResult = {
       filename: result.filename,
       vaultPath: result.vaultPath,
       systemPath: result.systemPath,
     };
+    this.recentExports.unshift({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      kind,
+      label,
+      filename: result.filename,
+      vaultPath: result.vaultPath,
+      systemPath: result.systemPath,
+      createdAt: new Date().toISOString(),
+    });
+    this.recentExports = this.recentExports.slice(0, MAX_RECENT_EXPORTS);
+    await this.runAfterExportActions(this.lastExportResult);
+  }
+
+  private async runAfterExportActions(result: LastExportResult) {
+    const path = result.systemPath ?? result.vaultPath ?? result.filename;
+    if (this.settings.afterExportCopyPath) {
+      await navigator.clipboard.writeText(path);
+    }
+    if (this.settings.afterExportOpenFile) {
+      await this.openExportedResult(result);
+    }
+    if (this.settings.afterExportRevealFile) {
+      await this.revealExportedResult(result);
+    }
   }
 
   private async runLastExport() {
@@ -564,17 +713,7 @@ export default class OwenExporterPlugin extends Plugin {
       return;
     }
 
-    if (result.vaultPath) {
-      await this.app.workspace.openLinkText(result.vaultPath, "", true);
-      return;
-    }
-
-    if (result.systemPath) {
-      const error = await shell.openPath(result.systemPath);
-      if (error) {
-        new Notice(error);
-      }
-    }
+    await this.openExportedResult(result);
   }
 
   private async revealLastExportedFile() {
@@ -583,6 +722,23 @@ export default class OwenExporterPlugin extends Plugin {
       return;
     }
 
+    await this.revealExportedResult(result);
+  }
+
+  private async openExportedResult(result: LastExportResult) {
+    if (result.vaultPath) {
+      await this.app.workspace.openLinkText(result.vaultPath, "", true);
+      return;
+    }
+    if (result.systemPath) {
+      const error = await shell.openPath(result.systemPath);
+      if (error) {
+        new Notice(error);
+      }
+    }
+  }
+
+  private async revealExportedResult(result: LastExportResult) {
     const systemPath = result.systemPath ?? this.getSystemPathForVaultPath(result.vaultPath ?? "");
     if (!systemPath) {
       new Notice("Unable to reveal this exported file");
@@ -644,6 +800,12 @@ export default class OwenExporterPlugin extends Plugin {
     });
     menu.addItem((item) => {
       item
+        .setTitle("Copy selection as plain text")
+        .setIcon("text")
+        .onClick(() => void this.copyHtmlWithTemporaryOptions(html, this.getActiveSourcePath(), "selection", { htmlClipboardMode: "text" }));
+    });
+    menu.addItem((item) => {
+      item
         .setTitle("Preview selection as HTML")
         .setIcon("eye")
         .onClick(() => this.openHtmlPreview("Selection HTML preview", html, this.getActiveSourcePath(), "selection"));
@@ -655,6 +817,115 @@ export default class OwenExporterPlugin extends Plugin {
         .onClick(() => void this.saveHtmlToFile(html, this.getActiveSourcePath(), "selection"));
     });
     menu.showAtMouseEvent(event);
+  }
+
+  private addHtmlCopyAsMenuItems(menu: Menu, renderHtml: () => Promise<string>, sourcePath: string | null, fallbackName: string) {
+    menu.addSeparator();
+    menu.addItem((item) => {
+      item
+        .setTitle("Copy as Obsidian-like HTML")
+        .setIcon("copy")
+        .onClick(() => void this.copyRenderedHtmlWithTemporaryOptions(renderHtml, sourcePath, fallbackName, { htmlStyleMode: "obsidian", htmlClipboardMode: "html-and-text" }));
+    });
+    menu.addItem((item) => {
+      item
+        .setTitle("Copy as Portable HTML")
+        .setIcon("copy")
+        .onClick(() => void this.copyRenderedHtmlWithTemporaryOptions(renderHtml, sourcePath, fallbackName, { htmlStyleMode: "portable", htmlClipboardMode: "html-and-text" }));
+    });
+    menu.addItem((item) => {
+      item
+        .setTitle("Copy as Clean HTML")
+        .setIcon("copy")
+        .onClick(() => void this.copyRenderedHtmlWithTemporaryOptions(renderHtml, sourcePath, fallbackName, { htmlStyleMode: "clean", htmlClipboardMode: "html" }));
+    });
+    menu.addItem((item) => {
+      item
+        .setTitle("Copy as plain text")
+        .setIcon("text")
+        .onClick(() => void this.copyRenderedHtmlWithTemporaryOptions(renderHtml, sourcePath, fallbackName, { htmlClipboardMode: "text" }));
+    });
+    menu.addItem((item) => {
+      item
+        .setTitle("Save as full HTML document")
+        .setIcon("file-down")
+        .onClick(() => void this.saveRenderedHtmlWithTemporaryOptions(renderHtml, sourcePath, fallbackName, { htmlSaveMode: "document" }));
+    });
+    menu.addItem((item) => {
+      item
+        .setTitle("Save as HTML fragment")
+        .setIcon("file-down")
+        .onClick(() => void this.saveRenderedHtmlWithTemporaryOptions(renderHtml, sourcePath, fallbackName, { htmlSaveMode: "fragment" }));
+    });
+  }
+
+  private async copyRenderedHtmlWithTemporaryOptions(renderHtml: () => Promise<string>, sourcePath: string | null, fallbackName: string, settings: Partial<OwenExporterSettings>) {
+    await this.withTemporarySettings(settings, async () => {
+      await this.copyHtmlExport(await renderHtml(), sourcePath, fallbackName);
+    });
+  }
+
+  private async saveRenderedHtmlWithTemporaryOptions(renderHtml: () => Promise<string>, sourcePath: string | null, fallbackName: string, settings: Partial<OwenExporterSettings>) {
+    await this.withTemporarySettings(settings, async () => {
+      await this.saveHtmlToFile(await renderHtml(), sourcePath, fallbackName);
+    });
+  }
+
+  private async copyHtmlWithTemporaryOptions(html: string, sourcePath: string | null, fallbackName: string, settings: Partial<OwenExporterSettings>) {
+    await this.withTemporarySettings(settings, async () => {
+      await this.copyHtmlExport(html, sourcePath, fallbackName);
+    });
+  }
+
+  private async withTemporarySettings<T>(settings: Partial<OwenExporterSettings>, run: () => Promise<T>): Promise<T> {
+    const previous = { ...this.settings };
+    Object.assign(this.settings, settings);
+    try {
+      return await run();
+    } finally {
+      this.settings = previous;
+    }
+  }
+
+  private async previewSvgTarget(target: SvgTarget) {
+    try {
+      const svgText = this.ensureSvgNamespace(await this.getSvgText(target));
+      const baseName = target.suggestedName.replace(/\.svg$/i, "");
+      this.openSvgPreview(svgText, baseName, target.sourcePath, this.settings.imageFormat);
+    } catch (error) {
+      console.error(error);
+      new Notice(`Failed to preview SVG: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private openSvgPreview(svgText: string, baseName: string, sourcePath: string | null, format: ExportImageFormat) {
+    const dimensions = getSvgDimensionsFromText(svgText);
+    const scale = this.getImageScale();
+    const outputWidth = Math.max(1, Math.round(dimensions.width * scale));
+    const outputHeight = Math.max(1, Math.round(dimensions.height * scale));
+    const extension = format === "jpeg" ? "jpg" : "png";
+    const filename = this.buildImageFilename(baseName, format, extension, { sourcePath, heading: baseName });
+    new SvgPreviewModal(this.app, {
+      baseName,
+      format,
+      sourcePath,
+      svgText,
+      dimensions,
+      warnings: this.getSvgExportWarnings(svgText, format),
+      filename,
+      outputWidth,
+      outputHeight,
+      background: this.settings.imageBackground,
+      onExport: (nextFormat) => this.exportSvgText(svgText, baseName, nextFormat, { sourcePath, heading: baseName }),
+    }).open();
+  }
+
+  private insertMarkdownLinkForExport(vaultPath: string) {
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    if (!view) {
+      return;
+    }
+    view.editor.replaceSelection(`![[${vaultPath}]]`);
   }
 
   private findSvgTarget(event: MouseEvent): SvgTarget | null {
@@ -913,7 +1184,10 @@ export default class OwenExporterPlugin extends Plugin {
       options,
       label: `Export ${baseName} as ${format.toUpperCase()}`,
     });
-    this.recordSavedFile(saved);
+    await this.recordSavedFile(saved, "image-save", `Export ${baseName} as ${format.toUpperCase()}`);
+    if (this.settings.afterImageExportInsertMarkdownLink && saved.vaultPath) {
+      this.insertMarkdownLinkForExport(saved.vaultPath);
+    }
     new Notice(`Saved ${format.toUpperCase()} export: ${saved.vaultPath ?? saved.systemPath ?? saved.filename}`);
   }
 
@@ -1219,12 +1493,48 @@ export default class OwenExporterPlugin extends Plugin {
     activeDocument.body.appendChild(container);
     renderComponent.load();
     try {
-      await MarkdownRenderer.render(this.app, markdown, container, sourcePath, renderComponent);
+      await MarkdownRenderer.render(this.app, this.preprocessMarkdown(markdown), container, sourcePath, renderComponent);
       this.inlinePreviewStyles(container);
+      this.applyHtmlQualityOptions(container, sourcePath);
       return container.innerHTML.trim();
     } finally {
       renderComponent.unload();
       container.remove();
+    }
+  }
+
+  private preprocessMarkdown(markdown: string): string {
+    if (!this.settings.htmlExcludeFrontmatter) {
+      return markdown;
+    }
+    return markdown.replace(/^---\s*\n[\s\S]*?\n---\s*(?:\n|$)/, "");
+  }
+
+  private applyHtmlQualityOptions(container: HTMLElement, sourcePath: string) {
+    if (!this.settings.htmlPreserveHeadingIds) {
+      for (const heading of Array.from(container.querySelectorAll<HTMLElement>("h1[id], h2[id], h3[id], h4[id], h5[id], h6[id]"))) {
+        heading.removeAttribute("id");
+      }
+    }
+
+    if (!this.settings.htmlPreserveCalloutClasses) {
+      for (const callout of Array.from(container.querySelectorAll<HTMLElement>(".callout"))) {
+        callout.removeAttribute("data-callout");
+        callout.removeClass("callout");
+      }
+    }
+
+    if (this.settings.htmlConvertInternalLinksToObsidianUris) {
+      for (const link of Array.from(container.querySelectorAll<HTMLAnchorElement>("a.internal-link, a[href]"))) {
+        const href = link.getAttribute("href") ?? "";
+        if (!href || /^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith("#")) {
+          continue;
+        }
+        const linkText = link.getAttribute("data-href") ?? href;
+        const file = this.app.metadataCache.getFirstLinkpathDest(linkText, sourcePath);
+        const targetPath = file?.path ?? linkText;
+        link.href = `obsidian://open?path=${encodeURIComponent(targetPath)}`;
+      }
     }
   }
 
@@ -1280,7 +1590,7 @@ export default class OwenExporterPlugin extends Plugin {
     const title = this.renderTextTemplate(this.settings.htmlDocumentTitle, tokens, `${baseName} export`);
     const content = this.settings.htmlSaveMode === "document" ? this.wrapHtmlDocument(html, title) : html;
     await this.app.vault.adapter.write(outputPath, content);
-    this.recordSavedFile({ filename, vaultPath: outputPath });
+    await this.recordSavedFile({ filename, vaultPath: outputPath }, "html-save", `Save ${fallbackName} as HTML`);
     this.recordLastExport({
       type: "html-save",
       html,
@@ -1410,6 +1720,123 @@ export default class OwenExporterPlugin extends Plugin {
     }
   }
 
+  private async exportCurrentFolderNotesAsHtml(view: MarkdownView) {
+    if (!view.file) {
+      return;
+    }
+    const folder = this.getFolderPath(view.file.path);
+    const files = this.app.vault.getMarkdownFiles().filter((file) => this.getFolderPath(file.path) === folder);
+    await this.exportMarkdownFilesAsHtml(files, folder || "vault root");
+  }
+
+  private async exportLinkedNotesAsHtml(view: MarkdownView) {
+    if (!view.file) {
+      return;
+    }
+    const markdown = await this.app.vault.read(view.file);
+    const files = this.getLinkedMarkdownFiles(markdown, view.file.path);
+    await this.exportMarkdownFilesAsHtml(files, `links from ${view.file.basename}`);
+  }
+
+  private async exportMarkdownFilesAsHtml(files: TFile[], label: string) {
+    if (!files.length) {
+      new Notice("No Markdown notes found to export");
+      return;
+    }
+    let savedCount = 0;
+    const failures: string[] = [];
+    for (const file of files) {
+      try {
+        const markdown = await this.app.vault.read(file);
+        const html = await this.renderMarkdownToHtml(markdown, file.path);
+        await this.saveHtmlToFile(html, file.path, "note");
+        savedCount += 1;
+      } catch (error) {
+        failures.push(`${file.path}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    if (failures.length) {
+      console.warn("Owen Exporter HTML batch export failures", failures);
+      new Notice(`Exported ${savedCount}/${files.length} notes from ${label}. Check the console for failed files.`);
+      return;
+    }
+    new Notice(`Exported ${savedCount} notes from ${label}`);
+  }
+
+  private getLinkedMarkdownFiles(markdown: string, sourcePath: string): TFile[] {
+    const seen = new Set<string>();
+    const files: TFile[] = [];
+    const addLink = (rawLink: string) => {
+      const cleanLink = rawLink.trim().replace(/^<|>$/g, "").replace(/[?#].*$/, "");
+      if (!cleanLink || /^[a-z][a-z0-9+.-]*:/i.test(cleanLink)) {
+        return;
+      }
+      const file = this.app.metadataCache.getFirstLinkpathDest(cleanLink.replace(/\.md$/i, ""), sourcePath);
+      if (file instanceof TFile && file.extension.toLowerCase() === "md" && !seen.has(file.path)) {
+        seen.add(file.path);
+        files.push(file);
+      }
+    };
+    for (const match of markdown.matchAll(/\[\[([^\]|#]+)(?:[#|][^\]]*)?\]\]/g)) {
+      addLink(match[1]);
+    }
+    for (const match of markdown.matchAll(/\[[^\]]*\]\(([^)]+?)(?:\.md)?(?:[?#][^)]*)?\)/g)) {
+      addLink(match[1]);
+    }
+    return files;
+  }
+
+  private getFolderPath(path: string): string {
+    return path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+  }
+
+  private openExportHistory() {
+    new ExportHistoryModal(this.app, this.recentExports, {
+      open: (entry) => this.openExportedResult(entry),
+      reveal: (entry) => this.revealExportedResult(entry),
+      copyPath: async (entry) => {
+        await navigator.clipboard.writeText(entry.systemPath ?? entry.vaultPath ?? entry.filename);
+        new Notice("Copied export path");
+      },
+      clear: () => {
+        this.recentExports = [];
+        new Notice("Export history cleared");
+      },
+    }).open();
+  }
+
+  async exportSettingsJson() {
+    await this.ensureFolder(this.settings.htmlOutputFolder);
+    const now = new Date();
+    const filename = `owen-exporter-settings-${this.formatDate(now)}-${this.formatTime(now)}.json`;
+    const outputPath = await this.nextAvailablePath(this.settings.htmlOutputFolder, filename);
+    const payload: ExporterSettingsFile = {
+      version: 1,
+      settings: this.settings,
+    };
+    await this.app.vault.adapter.write(outputPath, `${JSON.stringify(payload, null, 2)}\n`);
+    await this.recordSavedFile({ filename, vaultPath: outputPath }, "report", "Owen Exporter settings backup");
+    new Notice(`Exported settings: ${outputPath}`);
+  }
+
+  async importSettingsJsonFromClipboard() {
+    const text = await navigator.clipboard.readText();
+    let payload: ExporterSettingsFile;
+    try {
+      payload = JSON.parse(text) as ExporterSettingsFile;
+    } catch {
+      new Notice("Clipboard does not contain valid JSON");
+      return;
+    }
+    if (!payload || typeof payload !== "object" || !payload.settings || typeof payload.settings !== "object") {
+      new Notice("Clipboard JSON is not an Owen Exporter settings backup");
+      return;
+    }
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, payload.settings);
+    await this.saveSettings();
+    new Notice("Imported Owen Exporter settings");
+  }
+
   private async exportCurrentNoteSvgs(view: MarkdownView) {
     if (!view.file) {
       return;
@@ -1438,7 +1865,7 @@ export default class OwenExporterPlugin extends Plugin {
         });
         const blob = new Blob([raster], { type: mimeType });
         const outputPath = await this.saveImageBlobToVault(blob, filename);
-        this.recordSavedFile({ filename, vaultPath: outputPath });
+        await this.recordSavedFile({ filename, vaultPath: outputPath }, "image-save", `Batch SVG export ${index + 1}`);
         results.push({ index: index + 1, sourcePath: file.path, outputPath });
         savedCount += 1;
       } catch (error) {
@@ -1514,7 +1941,7 @@ export default class OwenExporterPlugin extends Plugin {
       "",
     ];
     await this.app.vault.adapter.write(outputPath, lines.join("\n"));
-    this.recordSavedFile({ filename, vaultPath: outputPath });
+    await this.recordSavedFile({ filename, vaultPath: outputPath }, "report", "SVG batch export report");
     return outputPath;
   }
 
@@ -1693,6 +2120,138 @@ class HtmlPreviewModal extends Modal {
   }
 }
 
+class SvgPreviewModal extends Modal {
+  private options: SvgPreviewOptions;
+  private objectUrl: string | null = null;
+
+  constructor(app: App, options: SvgPreviewOptions) {
+    super(app);
+    this.options = options;
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("owen-exporter-svg-preview-modal");
+    contentEl.createEl("h2", { text: "SVG export preview" });
+
+    const meta = contentEl.createDiv({ cls: "owen-exporter-preview-meta" });
+    this.addMeta(meta, "Filename", this.options.filename);
+    this.addMeta(meta, "Source size", `${Math.round(this.options.dimensions.width)} x ${Math.round(this.options.dimensions.height)}`);
+    this.addMeta(meta, "Output size", `${this.options.outputWidth} x ${this.options.outputHeight}`);
+    this.addMeta(meta, "Format", this.options.format.toUpperCase());
+    this.addMeta(meta, "Background", this.options.background || "transparent");
+
+    if (this.options.warnings.length) {
+      const warningList = contentEl.createDiv({ cls: "owen-exporter-preview-warnings" });
+      for (const warning of this.options.warnings) {
+        warningList.createDiv({ text: warning });
+      }
+    }
+
+    new Setting(contentEl)
+      .addButton((button) => {
+        button
+          .setButtonText("Export PNG")
+          .setIcon("image-down")
+          .onClick(async () => this.runExport("png"));
+      })
+      .addButton((button) => {
+        button
+          .setButtonText("Export JPEG")
+          .setIcon("image")
+          .onClick(async () => this.runExport("jpeg"));
+      });
+
+    const frame = contentEl.createDiv({ cls: "owen-exporter-svg-preview-frame" });
+    this.objectUrl = URL.createObjectURL(new Blob([this.options.svgText], { type: "image/svg+xml;charset=utf-8" }));
+    const image = frame.createEl("img", { attr: { src: this.objectUrl, alt: this.options.baseName } });
+    image.addClass("owen-exporter-svg-preview-image");
+  }
+
+  onClose() {
+    if (this.objectUrl) {
+      URL.revokeObjectURL(this.objectUrl);
+      this.objectUrl = null;
+    }
+    this.contentEl.empty();
+  }
+
+  private addMeta(parent: HTMLElement, label: string, value: string) {
+    const item = parent.createDiv({ cls: "owen-exporter-preview-meta-item" });
+    item.createSpan({ text: label });
+    item.createEl("strong", { text: value });
+  }
+
+  private async runExport(format: ExportImageFormat) {
+    try {
+      await this.options.onExport(format);
+    } catch (error) {
+      console.error(error);
+      new Notice(error instanceof Error ? error.message : String(error));
+    }
+  }
+}
+
+class ExportHistoryModal extends Modal {
+  private entries: RecentExportEntry[];
+  private actions: ExportHistoryActions;
+
+  constructor(app: App, entries: RecentExportEntry[], actions: ExportHistoryActions) {
+    super(app);
+    this.entries = entries;
+    this.actions = actions;
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("owen-exporter-history-modal");
+    contentEl.createEl("h2", { text: "Export history" });
+
+    if (!this.entries.length) {
+      contentEl.createDiv({ cls: "owen-exporter-empty-state", text: "No exports recorded in this session." });
+      return;
+    }
+
+    new Setting(contentEl).addButton((button) => {
+      button
+        .setButtonText("Clear history")
+        .setIcon("trash")
+        .onClick(() => {
+          this.actions.clear();
+          this.close();
+        });
+    });
+
+    const list = contentEl.createDiv({ cls: "owen-exporter-history-list" });
+    for (const entry of this.entries) {
+      const row = list.createDiv({ cls: "owen-exporter-history-row" });
+      const text = row.createDiv({ cls: "owen-exporter-history-text" });
+      text.createEl("strong", { text: entry.label });
+      text.createDiv({ text: entry.vaultPath ?? entry.systemPath ?? entry.filename });
+      text.createDiv({ cls: "owen-exporter-history-date", text: new Date(entry.createdAt).toLocaleString() });
+
+      const actions = row.createDiv({ cls: "owen-exporter-history-actions" });
+      this.addActionButton(actions, "Open", "external-link", () => this.actions.open(entry));
+      this.addActionButton(actions, "Reveal", "folder-open", () => this.actions.reveal(entry));
+      this.addActionButton(actions, "Copy path", "copy", () => this.actions.copyPath(entry));
+    }
+  }
+
+  onClose() {
+    this.contentEl.empty();
+  }
+
+  private addActionButton(parent: HTMLElement, label: string, icon: string, action: () => Promise<void>) {
+    const button = parent.createEl("button", { cls: "clickable-icon", attr: { "aria-label": label, title: label } });
+    setIcon(button, icon);
+    button.addEventListener("click", () => {
+      void action();
+    });
+  }
+}
+
 class OwenExporterSettingTab extends PluginSettingTab {
   plugin: OwenExporterPlugin;
 
@@ -1718,6 +2277,18 @@ class OwenExporterSettingTab extends PluginSettingTab {
       "Markdown to HTML",
       "Configure HTML preview, document output, clipboard formats, and filename templates.",
       "file-code",
+    );
+    const workflowGroup = this.createSettingsGroup(
+      settingsRoot,
+      "Workflow automation",
+      "Choose what happens after exports and manage reusable HTML profiles.",
+      "workflow",
+    );
+    const backupGroup = this.createSettingsGroup(
+      settingsRoot,
+      "Backup and restore",
+      "Export settings to a vault JSON file or import settings from clipboard JSON.",
+      "archive-restore",
     );
 
     new Setting(imageGroup)
@@ -1930,6 +2501,163 @@ class OwenExporterSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           });
       });
+
+    new Setting(htmlGroup)
+      .setName("Exclude frontmatter")
+      .setDesc("Remove YAML frontmatter before rendering Markdown to HTML.")
+      .addToggle((toggle) => {
+        toggle
+          .setValue(this.plugin.settings.htmlExcludeFrontmatter)
+          .onChange(async (value) => {
+            this.plugin.settings.htmlExcludeFrontmatter = value;
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(htmlGroup)
+      .setName("Preserve heading IDs")
+      .setDesc("Keep heading id attributes in exported HTML.")
+      .addToggle((toggle) => {
+        toggle
+          .setValue(this.plugin.settings.htmlPreserveHeadingIds)
+          .onChange(async (value) => {
+            this.plugin.settings.htmlPreserveHeadingIds = value;
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(htmlGroup)
+      .setName("Preserve callout classes")
+      .setDesc("Keep Obsidian callout classes and data attributes after styles are inlined.")
+      .addToggle((toggle) => {
+        toggle
+          .setValue(this.plugin.settings.htmlPreserveCalloutClasses)
+          .onChange(async (value) => {
+            this.plugin.settings.htmlPreserveCalloutClasses = value;
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(htmlGroup)
+      .setName("Convert internal links")
+      .setDesc("Convert internal note links to obsidian://open URIs in exported HTML.")
+      .addToggle((toggle) => {
+        toggle
+          .setValue(this.plugin.settings.htmlConvertInternalLinksToObsidianUris)
+          .onChange(async (value) => {
+            this.plugin.settings.htmlConvertInternalLinksToObsidianUris = value;
+            await this.plugin.saveSettings();
+          });
+      });
+
+    let profileName = "";
+    new Setting(workflowGroup)
+      .setName("Save current HTML profile")
+      .setDesc("Save the current HTML output, style, clipboard, filename, and title settings as a reusable profile.")
+      .addText((text) => {
+        text
+          .setPlaceholder("Blog clean HTML")
+          .onChange((value) => {
+            profileName = value.trim();
+          });
+      })
+      .addButton((button) => {
+        button
+          .setButtonText("Save profile")
+          .setIcon("save")
+          .onClick(async () => {
+            await this.saveCurrentHtmlProfile(profileName);
+          });
+      });
+
+    if (this.plugin.settings.htmlCustomProfiles.length) {
+      new Setting(workflowGroup)
+        .setName("Apply custom HTML profile")
+        .setDesc("Apply one of your saved HTML export profiles.")
+        .addDropdown((dropdown) => {
+          for (const profile of this.plugin.settings.htmlCustomProfiles) {
+            dropdown.addOption(profile.name, profile.name);
+          }
+          dropdown.onChange(async (value) => {
+            await this.applyCustomHtmlProfile(value);
+          });
+        })
+        .addButton((button) => {
+          button
+            .setButtonText("Delete")
+            .setIcon("trash")
+            .onClick(async () => {
+              const name = activeWindow.prompt("Custom profile name to delete");
+              if (name) {
+                await this.deleteCustomHtmlProfile(name.trim());
+              }
+            });
+        });
+    }
+
+    new Setting(workflowGroup)
+      .setName("Open file after export")
+      .setDesc("Open the exported vault or system file after it is saved.")
+      .addToggle((toggle) => {
+        toggle
+          .setValue(this.plugin.settings.afterExportOpenFile)
+          .onChange(async (value) => {
+            this.plugin.settings.afterExportOpenFile = value;
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(workflowGroup)
+      .setName("Reveal file after export")
+      .setDesc("Show the exported file in the system file manager after it is saved.")
+      .addToggle((toggle) => {
+        toggle
+          .setValue(this.plugin.settings.afterExportRevealFile)
+          .onChange(async (value) => {
+            this.plugin.settings.afterExportRevealFile = value;
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(workflowGroup)
+      .setName("Copy path after export")
+      .setDesc("Copy the exported file path after it is saved.")
+      .addToggle((toggle) => {
+        toggle
+          .setValue(this.plugin.settings.afterExportCopyPath)
+          .onChange(async (value) => {
+            this.plugin.settings.afterExportCopyPath = value;
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(workflowGroup)
+      .setName("Insert image link after SVG export")
+      .setDesc("When a SVG export is saved to the vault, insert a Markdown image link at the active cursor.")
+      .addToggle((toggle) => {
+        toggle
+          .setValue(this.plugin.settings.afterImageExportInsertMarkdownLink)
+          .onChange(async (value) => {
+            this.plugin.settings.afterImageExportInsertMarkdownLink = value;
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(backupGroup)
+      .setName("Settings JSON")
+      .setDesc("Export settings to the HTML output folder or import settings JSON from the clipboard.")
+      .addButton((button) => {
+        button
+          .setButtonText("Export")
+          .setIcon("download")
+          .onClick(() => void this.plugin.exportSettingsJson());
+      })
+      .addButton((button) => {
+        button
+          .setButtonText("Import from clipboard")
+          .setIcon("clipboard")
+          .onClick(() => void this.plugin.importSettingsJsonFromClipboard());
+      });
   }
 
   private createSettingsGroup(parent: HTMLElement, title: string, description: string, icon: string): HTMLElement {
@@ -1952,6 +2680,67 @@ class OwenExporterSettingTab extends PluginSettingTab {
       Object.assign(this.plugin.settings, HTML_EXPORT_PROFILES[profile]);
     }
     await this.plugin.saveSettings();
+    this.display();
+  }
+
+  private async saveCurrentHtmlProfile(name: string) {
+    if (!name) {
+      new Notice("Enter a profile name first");
+      return;
+    }
+    const profile: HtmlCustomProfile = {
+      name,
+      htmlOutputFolder: this.plugin.settings.htmlOutputFolder,
+      htmlFilenameTemplate: this.plugin.settings.htmlFilenameTemplate,
+      htmlSaveMode: this.plugin.settings.htmlSaveMode,
+      htmlStyleMode: this.plugin.settings.htmlStyleMode,
+      htmlClipboardMode: this.plugin.settings.htmlClipboardMode,
+      htmlDocumentTitle: this.plugin.settings.htmlDocumentTitle,
+      htmlExcludeFrontmatter: this.plugin.settings.htmlExcludeFrontmatter,
+      htmlPreserveHeadingIds: this.plugin.settings.htmlPreserveHeadingIds,
+      htmlPreserveCalloutClasses: this.plugin.settings.htmlPreserveCalloutClasses,
+      htmlConvertInternalLinksToObsidianUris: this.plugin.settings.htmlConvertInternalLinksToObsidianUris,
+    };
+    const profiles = this.plugin.settings.htmlCustomProfiles.filter((existing) => existing.name !== name);
+    profiles.push(profile);
+    this.plugin.settings.htmlCustomProfiles = profiles;
+    await this.plugin.saveSettings();
+    new Notice(`Saved HTML profile: ${name}`);
+    this.display();
+  }
+
+  private async applyCustomHtmlProfile(name: string) {
+    const profile = this.plugin.settings.htmlCustomProfiles.find((candidate) => candidate.name === name);
+    if (!profile) {
+      return;
+    }
+    Object.assign(this.plugin.settings, {
+      htmlExportProfile: "custom",
+      htmlOutputFolder: profile.htmlOutputFolder,
+      htmlFilenameTemplate: profile.htmlFilenameTemplate,
+      htmlSaveMode: profile.htmlSaveMode,
+      htmlStyleMode: profile.htmlStyleMode,
+      htmlClipboardMode: profile.htmlClipboardMode,
+      htmlDocumentTitle: profile.htmlDocumentTitle,
+      htmlExcludeFrontmatter: profile.htmlExcludeFrontmatter ?? DEFAULT_SETTINGS.htmlExcludeFrontmatter,
+      htmlPreserveHeadingIds: profile.htmlPreserveHeadingIds ?? DEFAULT_SETTINGS.htmlPreserveHeadingIds,
+      htmlPreserveCalloutClasses: profile.htmlPreserveCalloutClasses ?? DEFAULT_SETTINGS.htmlPreserveCalloutClasses,
+      htmlConvertInternalLinksToObsidianUris: profile.htmlConvertInternalLinksToObsidianUris ?? DEFAULT_SETTINGS.htmlConvertInternalLinksToObsidianUris,
+    });
+    await this.plugin.saveSettings();
+    new Notice(`Applied HTML profile: ${name}`);
+    this.display();
+  }
+
+  private async deleteCustomHtmlProfile(name: string) {
+    const before = this.plugin.settings.htmlCustomProfiles.length;
+    this.plugin.settings.htmlCustomProfiles = this.plugin.settings.htmlCustomProfiles.filter((profile) => profile.name !== name);
+    if (this.plugin.settings.htmlCustomProfiles.length === before) {
+      new Notice(`No custom profile named ${name}`);
+      return;
+    }
+    await this.plugin.saveSettings();
+    new Notice(`Deleted HTML profile: ${name}`);
     this.display();
   }
 

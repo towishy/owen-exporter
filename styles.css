@@ -29,6 +29,110 @@
   padding: 20px;
 }
 
+.owen-exporter-svg-preview-modal,
+.owen-exporter-history-modal {
+  max-width: min(920px, 92vw);
+}
+
+.owen-exporter-preview-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.owen-exporter-preview-meta-item {
+  display: grid;
+  gap: 3px;
+  padding: 10px 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-secondary);
+}
+
+.owen-exporter-preview-meta-item span,
+.owen-exporter-history-date {
+  color: var(--text-muted);
+  font-size: 0.82em;
+}
+
+.owen-exporter-preview-meta-item strong {
+  color: var(--text-normal);
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.owen-exporter-preview-warnings {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--background-modifier-error);
+  border-radius: 8px;
+  color: var(--text-error);
+  background: rgba(255, 0, 0, 0.08);
+}
+
+.owen-exporter-svg-preview-frame {
+  display: grid;
+  min-height: 220px;
+  max-height: min(58vh, 620px);
+  place-items: center;
+  margin-top: 12px;
+  overflow: auto;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-primary);
+}
+
+.owen-exporter-svg-preview-image {
+  max-width: 100%;
+  max-height: 560px;
+  padding: 20px;
+}
+
+.owen-exporter-empty-state {
+  padding: 18px;
+  border: 1px dashed var(--background-modifier-border);
+  border-radius: 8px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.owen-exporter-history-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.owen-exporter-history-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-secondary);
+}
+
+.owen-exporter-history-text {
+  min-width: 0;
+}
+
+.owen-exporter-history-text div,
+.owen-exporter-history-text strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.owen-exporter-history-actions {
+  display: flex;
+  gap: 4px;
+}
+
 .owen-exporter-settings .setting-item {
   border-top: 0;
 }

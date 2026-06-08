@@ -31,12 +31,14 @@ If direct vault saving is enabled, exports are written to the configured image o
 
 Use the command palette action **Export all SVG embeds in current note** to export every SVG image embedded in the active note to the configured image output folder.
 Use **Diagnose SVG embeds in current note** or the SVG context menu diagnostic action to check for external references, oversized output, or invalid background settings before exporting.
+Use the SVG context menu preview action to review the source size, output size, filename, background, warnings, and PNG/JPEG export actions before saving.
 
 ### Markdown selection to HTML
 
 In source mode, select Markdown text and right-click to access:
 
 - Copy selection as HTML
+- Copy selection through Obsidian-like, Portable, Clean HTML, or plain-text shortcuts
 - Preview selection as HTML
 - Save selection as HTML file
 - Save current note as HTML file
@@ -53,10 +55,16 @@ HTML style export can be set to Obsidian-like, Portable, or Clean HTML depending
 
 HTML settings include a vault output folder, a filename template, full document or fragment save mode, and a configurable document title template.
 Profiles can switch quickly between Obsidian-like documents, portable documents, and clean fragments. Clipboard exports can write HTML plus plain text, HTML only, or plain text only.
+Custom HTML profiles can save output folders, templates, save mode, style mode, clipboard format, document title, and HTML quality options.
+Quality options include frontmatter exclusion, heading ID preservation, callout class preservation, and internal link conversion to Obsidian URIs.
 
 By default, clipboard exports write both `text/html` and plain text, so pasting into rich editors keeps formatting while plain-text destinations receive readable text.
 
 Recent export commands let you run the last export again, open the last exported file, reveal it in the system file manager, or copy its path.
+The export history command shows recent saved files with open, reveal, and copy-path actions. Folder notes and linked notes can also be exported as HTML batches.
+
+Workflow automation settings can open, reveal, or copy the path of saved files after export. SVG image exports saved to the vault can optionally insert a Markdown image link at the active cursor.
+Settings can be exported to a JSON file in the vault and imported back from clipboard JSON.
 
 ## Development
 
