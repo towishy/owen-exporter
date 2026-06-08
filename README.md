@@ -20,21 +20,24 @@ Settings include:
 - Default output format: PNG or JPEG
 - Save location: ask every time or save directly to a vault folder
 - Image output folder for direct saves and batch exports
-- Image filename template with tokens such as `{{name}}`, `{{format}}`, `{{scale}}`, `{{date}}`, and `{{time}}`
+- Image filename template with tokens such as `{{name}}`, `{{note}}`, `{{folder}}`, `{{index}}`, `{{format}}`, `{{scale}}`, `{{date}}`, and `{{time}}`
 - JPEG quality
 - Rasterization scale for higher-resolution output
 - Background color for JPEG or transparent SVGs
+- Optional Markdown report files for SVG batch exports
 
 Exports open a local save dialog so you can choose any PC folder. If the native save dialog is unavailable, the plugin falls back to the browser download flow.
 If direct vault saving is enabled, exports are written to the configured image output folder instead.
 
 Use the command palette action **Export all SVG embeds in current note** to export every SVG image embedded in the active note to the configured image output folder.
+Use **Diagnose SVG embeds in current note** or the SVG context menu diagnostic action to check for external references, oversized output, or invalid background settings before exporting.
 
 ### Markdown selection to HTML
 
 In source mode, select Markdown text and right-click to access:
 
 - Copy selection as HTML
+- Preview selection as HTML
 - Save selection as HTML file
 - Save current note as HTML file
 
@@ -49,8 +52,11 @@ Table, code block, and callout exports include inline styles copied from the act
 HTML style export can be set to Obsidian-like, Portable, or Clean HTML depending on whether you want stronger visual fidelity or lighter markup.
 
 HTML settings include a vault output folder, a filename template, full document or fragment save mode, and a configurable document title template.
+Profiles can switch quickly between Obsidian-like documents, portable documents, and clean fragments. Clipboard exports can write HTML plus plain text, HTML only, or plain text only.
 
-Clipboard exports write both `text/html` and plain text, so pasting into rich editors keeps formatting while plain-text destinations receive readable text.
+By default, clipboard exports write both `text/html` and plain text, so pasting into rich editors keeps formatting while plain-text destinations receive readable text.
+
+Recent export commands let you run the last export again, open the last exported file, reveal it in the system file manager, or copy its path.
 
 ## Development
 

@@ -10,3 +10,21 @@
 .owen-exporter-download-link {
   display: none;
 }
+
+.owen-exporter-html-preview-modal {
+  max-width: min(920px, 92vw);
+}
+
+.owen-exporter-html-preview-frame {
+  max-height: min(68vh, 720px);
+  margin-top: 12px;
+  overflow: auto;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-primary);
+}
+
+.owen-exporter-html-preview-content {
+  min-height: 180px;
+  padding: 20px;
+}

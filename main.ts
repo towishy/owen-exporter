@@ -1,4 +1,4 @@
-import { remote } from "electron";
+import { remote, shell } from "electron";
 import { writeFile } from "fs/promises";
 import {
     App,
@@ -8,6 +8,7 @@ import {
     MarkdownRenderer,
     MarkdownView,
     Menu,
+    Modal,
     Notice,
     Platform,
     Plugin,
@@ -29,6 +30,9 @@ type ExportImageFormat = "png" | "jpeg";
 type ImageSaveMode = "dialog" | "vault";
 type HtmlSaveMode = "fragment" | "document";
 type HtmlStyleMode = "obsidian" | "portable" | "clean";
+type HtmlClipboardMode = "html-and-text" | "html" | "text";
+type HtmlExportProfile = "custom" | "obsidian-document" | "portable-document" | "clean-fragment";
+type SvgBatchReportMode = "never" | "on-failure" | "always";
 
 interface OwenExporterSettings {
   imageFormat: ExportImageFormat;
@@ -40,9 +44,49 @@ interface OwenExporterSettings {
   imageFilenameTemplate: string;
   htmlOutputFolder: string;
   htmlFilenameTemplate: string;
+  htmlExportProfile: HtmlExportProfile;
   htmlSaveMode: HtmlSaveMode;
   htmlStyleMode: HtmlStyleMode;
+  htmlClipboardMode: HtmlClipboardMode;
   htmlDocumentTitle: string;
+  svgBatchReportMode: SvgBatchReportMode;
+}
+
+interface FilenameTokenOptions {
+  sourcePath?: string | null;
+  index?: number;
+  heading?: string | null;
+}
+
+interface SavedFileResult {
+  filename: string;
+  vaultPath?: string;
+  systemPath?: string;
+}
+
+type LastExportAction =
+  | { type: "html-copy"; html: string; sourcePath: string | null; fallbackName: string; label: string }
+  | { type: "html-save"; html: string; sourcePath: string | null; fallbackName: string; label: string }
+  | { type: "svg"; svgText: string; baseName: string; format: ExportImageFormat; options: FilenameTokenOptions; label: string };
+
+interface LastExportResult {
+  filename: string;
+  vaultPath?: string;
+  systemPath?: string;
+}
+
+interface SvgBatchResult {
+  index: number;
+  sourcePath: string;
+  outputPath?: string;
+  error?: string;
+}
+
+interface HtmlPreviewOptions {
+  title: string;
+  html: string;
+  onCopy: () => Promise<void>;
+  onSave: () => Promise<void>;
 }
 
 interface SvgTarget {
@@ -86,9 +130,30 @@ const DEFAULT_SETTINGS: OwenExporterSettings = {
   imageFilenameTemplate: "{{name}}",
   htmlOutputFolder: "exports/html",
   htmlFilenameTemplate: "{{name}}",
+  htmlExportProfile: "obsidian-document",
   htmlSaveMode: "document",
   htmlStyleMode: "obsidian",
+  htmlClipboardMode: "html-and-text",
   htmlDocumentTitle: "{{name}} export",
+  svgBatchReportMode: "on-failure",
+};
+
+const HTML_EXPORT_PROFILES: Record<Exclude<HtmlExportProfile, "custom">, Pick<OwenExporterSettings, "htmlSaveMode" | "htmlStyleMode" | "htmlDocumentTitle">> = {
+  "obsidian-document": {
+    htmlSaveMode: "document",
+    htmlStyleMode: "obsidian",
+    htmlDocumentTitle: "{{name}} export",
+  },
+  "portable-document": {
+    htmlSaveMode: "document",
+    htmlStyleMode: "portable",
+    htmlDocumentTitle: "{{rawName}} export",
+  },
+  "clean-fragment": {
+    htmlSaveMode: "fragment",
+    htmlStyleMode: "clean",
+    htmlDocumentTitle: "{{rawName}}",
+  },
 };
 
 const MAX_CANVAS_PIXELS = 100_000_000;
@@ -221,6 +286,8 @@ const HTML_STYLE_VARIABLES = [
 
 export default class OwenExporterPlugin extends Plugin {
   settings: OwenExporterSettings;
+  private lastExportAction: LastExportAction | null = null;
+  private lastExportResult: LastExportResult | null = null;
 
   async onload() {
     await this.loadSettings();
@@ -243,6 +310,21 @@ export default class OwenExporterPlugin extends Plugin {
     });
 
     this.addCommand({
+      id: "preview-selected-markdown-as-html",
+      name: "Preview selected Markdown as HTML",
+      editorCheckCallback: (checking, editor, view) => {
+        const selection = editor.getSelection();
+        if (!selection.trim()) {
+          return false;
+        }
+        if (!checking) {
+          void this.previewSelectionAsHtml(editor, view);
+        }
+        return true;
+      },
+    });
+
+    this.addCommand({
       id: "save-selected-markdown-as-html",
       name: "Save selected Markdown as HTML file",
       editorCheckCallback: (checking, editor, view) => {
@@ -252,6 +334,21 @@ export default class OwenExporterPlugin extends Plugin {
         }
         if (!checking) {
           void this.saveSelectionAsHtml(editor, view);
+        }
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: "preview-current-note-as-html",
+      name: "Preview current note as HTML",
+      checkCallback: (checking) => {
+        const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+        if (!view?.file) {
+          return false;
+        }
+        if (!checking) {
+          void this.previewCurrentNoteAsHtml(view);
         }
         return true;
       },
@@ -287,6 +384,77 @@ export default class OwenExporterPlugin extends Plugin {
       },
     });
 
+    this.addCommand({
+      id: "diagnose-current-note-svgs",
+      name: "Diagnose SVG embeds in current note",
+      checkCallback: (checking) => {
+        const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+        if (!view?.file) {
+          return false;
+        }
+        if (!checking) {
+          void this.diagnoseCurrentNoteSvgs(view);
+        }
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: "rerun-last-export",
+      name: "Run last export again",
+      checkCallback: (checking) => {
+        if (!this.lastExportAction) {
+          return false;
+        }
+        if (!checking) {
+          void this.runLastExport();
+        }
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: "open-last-exported-file",
+      name: "Open last exported file",
+      checkCallback: (checking) => {
+        if (!this.lastExportResult) {
+          return false;
+        }
+        if (!checking) {
+          void this.openLastExportedFile();
+        }
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: "reveal-last-exported-file",
+      name: "Reveal last exported file",
+      checkCallback: (checking) => {
+        if (!this.lastExportResult) {
+          return false;
+        }
+        if (!checking) {
+          void this.revealLastExportedFile();
+        }
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: "copy-last-exported-path",
+      name: "Copy last exported path",
+      checkCallback: (checking) => {
+        if (!this.lastExportResult) {
+          return false;
+        }
+        if (!checking) {
+          void this.copyLastExportedPath();
+        }
+        return true;
+      },
+    });
+
     this.registerEvent(
       this.app.workspace.on("editor-menu", (menu, editor, view) => {
         if (!editor.getSelection().trim()) {
@@ -298,6 +466,12 @@ export default class OwenExporterPlugin extends Plugin {
             .setTitle("Copy selection as HTML")
             .setIcon("copy")
             .onClick(() => void this.copySelectionAsHtml(editor, view));
+        });
+        menu.addItem((item) => {
+          item
+            .setTitle("Preview selection as HTML")
+            .setIcon("eye")
+            .onClick(() => void this.previewSelectionAsHtml(editor, view));
         });
         menu.addItem((item) => {
           item
@@ -332,6 +506,12 @@ export default class OwenExporterPlugin extends Plugin {
           .setIcon("image")
           .onClick(() => void this.exportSvgTarget(svgTarget, alternateFormat));
       });
+      menu.addItem((item) => {
+        item
+          .setTitle("Diagnose SVG export")
+          .setIcon("search-check")
+          .onClick(() => void this.diagnoseSvgTarget(svgTarget));
+      });
       menu.showAtMouseEvent(event);
     }, { capture: true });
   }
@@ -342,6 +522,93 @@ export default class OwenExporterPlugin extends Plugin {
 
   async saveSettings() {
     await this.saveData(this.settings);
+  }
+
+  private recordLastExport(action: LastExportAction) {
+    this.lastExportAction = action;
+  }
+
+  private recordSavedFile(result: SavedFileResult) {
+    this.lastExportResult = {
+      filename: result.filename,
+      vaultPath: result.vaultPath,
+      systemPath: result.systemPath,
+    };
+  }
+
+  private async runLastExport() {
+    if (!this.lastExportAction) {
+      new Notice("No previous export to run");
+      return;
+    }
+
+    const action = this.lastExportAction;
+    try {
+      if (action.type === "html-copy") {
+        await this.copyHtmlExport(action.html, action.sourcePath, action.fallbackName);
+      } else if (action.type === "html-save") {
+        await this.saveHtmlToFile(action.html, action.sourcePath, action.fallbackName);
+      } else {
+        await this.exportSvgText(action.svgText, action.baseName, action.format, action.options);
+      }
+    } catch (error) {
+      console.error(error);
+      new Notice(`Failed to run last export: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private async openLastExportedFile() {
+    const result = this.lastExportResult;
+    if (!result) {
+      return;
+    }
+
+    if (result.vaultPath) {
+      await this.app.workspace.openLinkText(result.vaultPath, "", true);
+      return;
+    }
+
+    if (result.systemPath) {
+      const error = await shell.openPath(result.systemPath);
+      if (error) {
+        new Notice(error);
+      }
+    }
+  }
+
+  private async revealLastExportedFile() {
+    const result = this.lastExportResult;
+    if (!result) {
+      return;
+    }
+
+    const systemPath = result.systemPath ?? this.getSystemPathForVaultPath(result.vaultPath ?? "");
+    if (!systemPath) {
+      new Notice("Unable to reveal this exported file");
+      return;
+    }
+    shell.showItemInFolder(systemPath);
+  }
+
+  private async copyLastExportedPath() {
+    const result = this.lastExportResult;
+    if (!result) {
+      return;
+    }
+    const path = result.systemPath ?? result.vaultPath ?? result.filename;
+    await navigator.clipboard.writeText(path);
+    new Notice("Copied last exported path");
+  }
+
+  private getSystemPathForVaultPath(vaultPath: string): string | null {
+    if (!vaultPath) {
+      return null;
+    }
+    const adapter = this.app.vault.adapter;
+    if (!(adapter instanceof FileSystemAdapter)) {
+      return null;
+    }
+    return adapter.getFullPath(vaultPath);
   }
 
   private addPreviewSelectionMenu(event: MouseEvent) {
@@ -372,7 +639,13 @@ export default class OwenExporterPlugin extends Plugin {
       item
         .setTitle("Copy selection as HTML")
         .setIcon("copy")
-        .onClick(() => void this.copyHtmlToClipboard(html));
+        .onClick(() => void this.copyHtmlExport(html, this.getActiveSourcePath(), "selection"));
+    });
+    menu.addItem((item) => {
+      item
+        .setTitle("Preview selection as HTML")
+        .setIcon("eye")
+        .onClick(() => this.openHtmlPreview("Selection HTML preview", html, this.getActiveSourcePath(), "selection"));
     });
     menu.addItem((item) => {
       item
@@ -613,15 +886,8 @@ export default class OwenExporterPlugin extends Plugin {
   private async exportSvgTarget(target: SvgTarget, format: ExportImageFormat) {
     try {
       const svgText = this.ensureSvgNamespace(await this.getSvgText(target));
-      const raster = await this.rasterizeSvg(svgText, format);
-      const extension = format === "jpeg" ? "jpg" : "png";
       const baseName = target.suggestedName.replace(/\.svg$/i, "");
-      const filename = this.buildImageFilename(baseName, format, extension);
-      const mimeType = format === "jpeg" ? "image/jpeg" : "image/png";
-      const blob = new Blob([raster], { type: mimeType });
-
-      const savedPath = await this.saveImageBlob(blob, filename, mimeType, extension);
-      new Notice(`Saved ${format.toUpperCase()} export: ${savedPath ?? filename}`);
+      await this.exportSvgText(svgText, baseName, format, { sourcePath: target.sourcePath, heading: baseName });
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
         return;
@@ -631,18 +897,38 @@ export default class OwenExporterPlugin extends Plugin {
     }
   }
 
-  private buildImageFilename(baseName: string, format: ExportImageFormat, extension: string): string {
-    const filename = renderFilenameTemplate(this.settings.imageFilenameTemplate, this.getFilenameTokens(baseName, format), baseName);
+  private async exportSvgText(svgText: string, baseName: string, format: ExportImageFormat, options: FilenameTokenOptions = {}) {
+    const raster = await this.rasterizeSvg(svgText, format);
+    const extension = format === "jpeg" ? "jpg" : "png";
+    const filename = this.buildImageFilename(baseName, format, extension, options);
+    const mimeType = format === "jpeg" ? "image/jpeg" : "image/png";
+    const blob = new Blob([raster], { type: mimeType });
+    const saved = await this.saveImageBlob(blob, filename, mimeType, extension);
+    this.recordLastExport({
+      type: "svg",
+      svgText,
+      baseName,
+      format,
+      options,
+      label: `Export ${baseName} as ${format.toUpperCase()}`,
+    });
+    this.recordSavedFile(saved);
+    new Notice(`Saved ${format.toUpperCase()} export: ${saved.vaultPath ?? saved.systemPath ?? saved.filename}`);
+  }
+
+  private buildImageFilename(baseName: string, format: ExportImageFormat, extension: string, options: FilenameTokenOptions = {}): string {
+    const filename = renderFilenameTemplate(this.settings.imageFilenameTemplate, this.getFilenameTokens(baseName, format, options), baseName);
     return `${filename}.${extension}`;
   }
 
-  private async saveImageBlob(blob: Blob, filename: string, mimeType: string, extension: string): Promise<string | null> {
+  private async saveImageBlob(blob: Blob, filename: string, mimeType: string, extension: string): Promise<SavedFileResult> {
     if (this.settings.imageSaveMode === "vault") {
-      return this.saveImageBlobToVault(blob, filename);
+      const vaultPath = await this.saveImageBlobToVault(blob, filename);
+      return { filename, vaultPath };
     }
 
-    await this.saveBlobWithPicker(blob, filename, mimeType, extension);
-    return null;
+    const systemPath = await this.saveBlobWithPicker(blob, filename, mimeType, extension);
+    return { filename, systemPath: systemPath ?? undefined };
   }
 
   private async saveImageBlobToVault(blob: Blob, filename: string): Promise<string> {
@@ -652,9 +938,12 @@ export default class OwenExporterPlugin extends Plugin {
     return outputPath;
   }
 
-  private async saveBlobWithPicker(blob: Blob, filename: string, mimeType: string, extension: string) {
-    if (Platform.isDesktopApp && await this.saveBlobWithElectronDialog(blob, filename, extension)) {
-      return;
+  private async saveBlobWithPicker(blob: Blob, filename: string, mimeType: string, extension: string): Promise<string | null> {
+    if (Platform.isDesktopApp) {
+      const systemPath = await this.saveBlobWithElectronDialog(blob, filename, extension);
+      if (systemPath) {
+        return systemPath;
+      }
     }
 
     const savePicker = (window as WindowWithSavePicker).showSaveFilePicker;
@@ -671,16 +960,17 @@ export default class OwenExporterPlugin extends Plugin {
       const writable = await handle.createWritable();
       await writable.write(blob);
       await writable.close();
-      return;
+      return null;
     }
 
     this.downloadBlobWithAnchor(blob, filename);
+    return null;
   }
 
-  private async saveBlobWithElectronDialog(blob: Blob, filename: string, extension: string): Promise<boolean> {
+  private async saveBlobWithElectronDialog(blob: Blob, filename: string, extension: string): Promise<string | null> {
     const dialog = remote?.dialog;
     if (!dialog) {
-      return false;
+      return null;
     }
 
     const result = await dialog.showSaveDialog({
@@ -694,7 +984,7 @@ export default class OwenExporterPlugin extends Plugin {
 
     const buffer = new Uint8Array(await blob.arrayBuffer());
     await writeFile(result.filePath, buffer);
-    return true;
+    return result.filePath;
   }
 
   private downloadBlobWithAnchor(blob: Blob, filename: string) {
@@ -825,6 +1115,44 @@ export default class OwenExporterPlugin extends Plugin {
     return /(?:href|xlink:href)=["']https?:\/\//i.test(svgText) || /url\(["']?https?:\/\//i.test(svgText) || /@import\s+url\(["']?https?:\/\//i.test(svgText);
   }
 
+  private getSvgExportWarnings(svgText: string, format: ExportImageFormat): string[] {
+    const warnings: string[] = [];
+    this.assertParsableSvg(svgText);
+    const dimensions = getSvgDimensionsFromText(svgText);
+    const scale = this.getImageScale();
+    const width = Math.max(1, Math.round(dimensions.width * scale));
+    const height = Math.max(1, Math.round(dimensions.height * scale));
+
+    if (this.hasExternalSvgReferences(svgText)) {
+      warnings.push("External image, font, or stylesheet references may block canvas export.");
+    }
+    if (width * height > MAX_CANVAS_PIXELS) {
+      warnings.push(`Estimated output is too large (${width}x${height}). Lower the image scale.`);
+    }
+    if ((format === "jpeg" || this.settings.imageBackground.trim().toLowerCase() !== "transparent") && !this.isValidCssColor(this.settings.imageBackground)) {
+      warnings.push(`Invalid image background color: ${this.settings.imageBackground}`);
+    }
+
+    return warnings;
+  }
+
+  private async diagnoseSvgTarget(target: SvgTarget) {
+    try {
+      const svgText = this.ensureSvgNamespace(await this.getSvgText(target));
+      const dimensions = getSvgDimensionsFromText(svgText);
+      const warnings = this.getSvgExportWarnings(svgText, this.settings.imageFormat);
+      if (warnings.length) {
+        console.warn("Owen Exporter SVG diagnostics", warnings);
+        new Notice(`SVG export warning: ${warnings[0]}`);
+        return;
+      }
+      new Notice(`SVG export looks ready (${Math.round(dimensions.width)}x${Math.round(dimensions.height)} @ ${this.getImageScale()}x)`);
+    } catch (error) {
+      console.error(error);
+      new Notice(`SVG export diagnostic failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   private isValidCssColor(value: string): boolean {
     const color = value.trim();
     if (!color || color.toLowerCase() === "transparent") {
@@ -844,12 +1172,26 @@ export default class OwenExporterPlugin extends Plugin {
 
   private async copySelectionAsHtml(editor: Editor, view: MarkdownSourceInfo) {
     const html = await this.renderMarkdownToHtml(editor.getSelection(), view.file?.path ?? "");
-    await this.copyHtmlToClipboard(html);
+    await this.copyHtmlExport(html, view.file?.path ?? null, "selection");
+  }
+
+  private async previewSelectionAsHtml(editor: Editor, view: MarkdownSourceInfo) {
+    const html = await this.renderMarkdownToHtml(editor.getSelection(), view.file?.path ?? "");
+    this.openHtmlPreview("Selection HTML preview", html, view.file?.path ?? null, "selection");
   }
 
   private async saveSelectionAsHtml(editor: Editor, view: MarkdownSourceInfo) {
     const html = await this.renderMarkdownToHtml(editor.getSelection(), view.file?.path ?? "");
     await this.saveHtmlToFile(html, view.file?.path ?? null, "selection");
+  }
+
+  private async previewCurrentNoteAsHtml(view: MarkdownView) {
+    if (!view.file) {
+      return;
+    }
+    const markdown = await this.app.vault.read(view.file);
+    const html = await this.renderMarkdownToHtml(markdown, view.file.path);
+    this.openHtmlPreview("Current note HTML preview", html, view.file.path, "note");
   }
 
   private async saveCurrentNoteAsHtml(view: MarkdownView) {
@@ -859,6 +1201,15 @@ export default class OwenExporterPlugin extends Plugin {
     const markdown = await this.app.vault.read(view.file);
     const html = await this.renderMarkdownToHtml(markdown, view.file.path);
     await this.saveHtmlToFile(html, view.file.path, "note");
+  }
+
+  private openHtmlPreview(title: string, html: string, sourcePath: string | null, fallbackName: string) {
+    new HtmlPreviewModal(this.app, {
+      title,
+      html,
+      onCopy: () => this.copyHtmlExport(html, sourcePath, fallbackName),
+      onSave: () => this.saveHtmlToFile(html, sourcePath, fallbackName),
+    }).open();
   }
 
   private async renderMarkdownToHtml(markdown: string, sourcePath: string): Promise<string> {
@@ -888,14 +1239,30 @@ export default class OwenExporterPlugin extends Plugin {
       .replace(/"/g, "&quot;");
   }
 
+  private async copyHtmlExport(html: string, sourcePath: string | null, fallbackName: string) {
+    await this.copyHtmlToClipboard(html);
+    this.recordLastExport({
+      type: "html-copy",
+      html,
+      sourcePath,
+      fallbackName,
+      label: `Copy ${fallbackName} as HTML`,
+    });
+  }
+
   private async copyHtmlToClipboard(html: string) {
     const plainText = this.htmlToPlainText(html);
-    if (navigator.clipboard && "write" in navigator.clipboard && typeof ClipboardItem !== "undefined") {
+    if (this.settings.htmlClipboardMode === "text") {
+      await navigator.clipboard.writeText(plainText);
+    } else if (navigator.clipboard && "write" in navigator.clipboard && typeof ClipboardItem !== "undefined") {
+      const clipboardPayload: Record<string, Blob> = {
+        "text/html": new Blob([html], { type: "text/html" }),
+      };
+      if (this.settings.htmlClipboardMode === "html-and-text") {
+        clipboardPayload["text/plain"] = new Blob([plainText], { type: "text/plain" });
+      }
       await navigator.clipboard.write([
-        new ClipboardItem({
-          "text/html": new Blob([html], { type: "text/html" }),
-          "text/plain": new Blob([plainText], { type: "text/plain" }),
-        }),
+        new ClipboardItem(clipboardPayload),
       ]);
     } else {
       await navigator.clipboard.writeText(plainText);
@@ -906,12 +1273,20 @@ export default class OwenExporterPlugin extends Plugin {
   private async saveHtmlToFile(html: string, sourcePath: string | null, fallbackName: string) {
     await this.ensureFolder(this.settings.htmlOutputFolder);
     const baseName = sourcePath ? this.basename(sourcePath) : fallbackName;
-    const tokens = this.getFilenameTokens(baseName, "html");
+    const tokens = this.getFilenameTokens(baseName, "html", { sourcePath, heading: baseName });
     const filename = `${renderFilenameTemplate(this.settings.htmlFilenameTemplate, tokens, baseName)}.html`;
     const outputPath = await this.nextAvailablePath(this.settings.htmlOutputFolder, filename);
     const title = this.renderTextTemplate(this.settings.htmlDocumentTitle, tokens, `${baseName} export`);
     const content = this.settings.htmlSaveMode === "document" ? this.wrapHtmlDocument(html, title) : html;
     await this.app.vault.adapter.write(outputPath, content);
+    this.recordSavedFile({ filename, vaultPath: outputPath });
+    this.recordLastExport({
+      type: "html-save",
+      html,
+      sourcePath,
+      fallbackName,
+      label: `Save ${fallbackName} as HTML`,
+    });
     new Notice(`Saved HTML export: ${outputPath}`);
   }
 
@@ -1047,31 +1422,103 @@ export default class OwenExporterPlugin extends Plugin {
     }
 
     let savedCount = 0;
-    const failures: string[] = [];
+    const results: SvgBatchResult[] = [];
     const format = this.settings.imageFormat;
     const extension = format === "jpeg" ? "jpg" : "png";
     const mimeType = format === "jpeg" ? "image/jpeg" : "image/png";
 
-    for (const file of files) {
+    for (const [index, file] of files.entries()) {
       try {
         const svgText = this.ensureSvgNamespace(await this.app.vault.read(file));
         const raster = await this.rasterizeSvg(svgText, format);
-        const filename = this.buildImageFilename(this.basename(file.path), format, extension);
+        const filename = this.buildImageFilename(this.basename(file.path), format, extension, {
+          sourcePath: view.file.path,
+          index: index + 1,
+        });
         const blob = new Blob([raster], { type: mimeType });
-        await this.saveImageBlobToVault(blob, filename);
+        const outputPath = await this.saveImageBlobToVault(blob, filename);
+        this.recordSavedFile({ filename, vaultPath: outputPath });
+        results.push({ index: index + 1, sourcePath: file.path, outputPath });
         savedCount += 1;
       } catch (error) {
-        failures.push(`${file.path}: ${error instanceof Error ? error.message : String(error)}`);
+        results.push({ index: index + 1, sourcePath: file.path, error: error instanceof Error ? error.message : String(error) });
       }
     }
 
+    const failures = results.filter((result) => result.error);
+    const reportPath = await this.maybeWriteSvgBatchReport(view.file.path, results);
     if (failures.length) {
       console.warn("Owen Exporter SVG batch export failures", failures);
-      new Notice(`Exported ${savedCount}/${files.length} SVGs. Check the console for failed files.`);
+      new Notice(`Exported ${savedCount}/${files.length} SVGs.${reportPath ? ` Report: ${reportPath}` : " Check the console for failed files."}`);
       return;
     }
 
-    new Notice(`Exported ${savedCount} SVGs to ${normalizeVaultFolder(this.settings.imageOutputFolder) || "the vault root"}`);
+    new Notice(`Exported ${savedCount} SVGs to ${normalizeVaultFolder(this.settings.imageOutputFolder) || "the vault root"}${reportPath ? `. Report: ${reportPath}` : ""}`);
+  }
+
+  private async diagnoseCurrentNoteSvgs(view: MarkdownView) {
+    if (!view.file) {
+      return;
+    }
+
+    const markdown = await this.app.vault.read(view.file);
+    const files = this.getSvgFilesFromMarkdown(markdown, view.file.path);
+    if (!files.length) {
+      new Notice("No SVG embeds found in the current note");
+      return;
+    }
+
+    const results: SvgBatchResult[] = [];
+    for (const [index, file] of files.entries()) {
+      try {
+        const svgText = this.ensureSvgNamespace(await this.app.vault.read(file));
+        const warnings = this.getSvgExportWarnings(svgText, this.settings.imageFormat);
+        results.push({ index: index + 1, sourcePath: file.path, error: warnings.join("; ") || undefined });
+      } catch (error) {
+        results.push({ index: index + 1, sourcePath: file.path, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+
+    const warnings = results.filter((result) => result.error);
+    if (warnings.length) {
+      console.warn("Owen Exporter SVG diagnostics", warnings);
+      new Notice(`${warnings.length}/${results.length} SVGs may need attention. Check the console for details.`);
+      return;
+    }
+    new Notice(`All ${results.length} SVG embeds look ready for export`);
+  }
+
+  private async maybeWriteSvgBatchReport(sourceNotePath: string, results: SvgBatchResult[]): Promise<string | null> {
+    const hasFailures = results.some((result) => result.error);
+    if (this.settings.svgBatchReportMode === "never" || (this.settings.svgBatchReportMode === "on-failure" && !hasFailures)) {
+      return null;
+    }
+
+    await this.ensureFolder(this.settings.imageOutputFolder);
+    const now = new Date();
+    const filename = `svg-export-report-${this.formatDate(now)}-${this.formatTime(now)}.md`;
+    const outputPath = await this.nextAvailablePath(this.settings.imageOutputFolder, filename);
+    const lines = [
+      `# SVG export report`,
+      "",
+      `- Source note: ${sourceNotePath}`,
+      `- Created: ${now.toISOString()}`,
+      `- Total: ${results.length}`,
+      `- Succeeded: ${results.filter((result) => result.outputPath).length}`,
+      `- Failed: ${results.filter((result) => result.error).length}`,
+      "",
+      "| # | Source | Output | Status |",
+      "|---:|---|---|---|",
+      ...results.map((result) => `| ${result.index} | ${this.escapeMarkdownTableCell(result.sourcePath)} | ${this.escapeMarkdownTableCell(result.outputPath ?? "")} | ${this.escapeMarkdownTableCell(result.error ?? "OK")} |`),
+      "",
+    ];
+    await this.app.vault.adapter.write(outputPath, lines.join("\n"));
+    this.recordSavedFile({ filename, vaultPath: outputPath });
+    return outputPath;
+  }
+
+  private escapeMarkdownTableCell(value: string): string {
+    return value.replace(/\|/g, "\\|").replace(/\n/g, " ");
   }
 
   private getSvgFilesFromMarkdown(markdown: string, sourcePath: string): TFile[] {
@@ -1125,11 +1572,22 @@ export default class OwenExporterPlugin extends Plugin {
     return slugifyExportName(value);
   }
 
-  private getFilenameTokens(name: string, format: string): Record<string, string | number> {
+  private getFilenameTokens(name: string, format: string, options: FilenameTokenOptions = {}): Record<string, string | number> {
     const now = new Date();
+    const sourcePath = options.sourcePath ?? "";
+    const folderPath = sourcePath.includes("/") ? sourcePath.slice(0, sourcePath.lastIndexOf("/")) : "";
+    const folderName = folderPath ? folderPath.split("/").pop() ?? "vault" : "vault";
+    const noteName = sourcePath ? this.basename(sourcePath) : name;
     return {
       name: this.slugify(name),
       rawName: name,
+      note: this.slugify(noteName),
+      rawNote: noteName,
+      folder: this.slugify(folderName),
+      rawFolder: folderName,
+      heading: this.slugify(options.heading ?? name),
+      rawHeading: options.heading ?? name,
+      index: options.index ?? "",
       format,
       scale: this.getImageScale(),
       date: this.formatDate(now),
@@ -1177,6 +1635,60 @@ export default class OwenExporterPlugin extends Plugin {
 
   private async nextAvailablePath(folder: string, filename: string): Promise<string> {
     return normalizePath(await nextAvailableVaultPath(folder, filename, (path) => this.app.vault.adapter.exists(normalizePath(path))));
+  }
+}
+
+class HtmlPreviewModal extends Modal {
+  private options: HtmlPreviewOptions;
+
+  constructor(app: App, options: HtmlPreviewOptions) {
+    super(app);
+    this.options = options;
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("owen-exporter-html-preview-modal");
+    contentEl.createEl("h2", { text: this.options.title });
+
+    new Setting(contentEl)
+      .addButton((button) => {
+        button
+          .setButtonText("Copy HTML")
+          .setIcon("copy")
+          .onClick(async () => {
+            await this.runAction(this.options.onCopy);
+          });
+      })
+      .addButton((button) => {
+        button
+          .setButtonText("Save HTML")
+          .setIcon("file-down")
+          .setCta()
+          .onClick(async () => {
+            await this.runAction(this.options.onSave);
+          });
+      });
+
+    const frame = contentEl.createDiv({ cls: "owen-exporter-html-preview-frame" });
+    const preview = frame.createDiv({ cls: "owen-exporter-html-preview-content" });
+    preview.addClass("markdown-preview-view");
+    preview.addClass("markdown-rendered");
+    preview.innerHTML = this.options.html;
+  }
+
+  onClose() {
+    this.contentEl.empty();
+  }
+
+  private async runAction(action: () => Promise<void>) {
+    try {
+      await action();
+    } catch (error) {
+      console.error(error);
+      new Notice(error instanceof Error ? error.message : String(error));
+    }
   }
 }
 
@@ -1234,8 +1746,23 @@ class OwenExporterSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
+      .setName("SVG batch report")
+      .setDesc("Write a Markdown report for batch SVG exports.")
+      .addDropdown((dropdown) => {
+        dropdown
+          .addOption("on-failure", "Only when something fails")
+          .addOption("always", "Always")
+          .addOption("never", "Never")
+          .setValue(this.plugin.settings.svgBatchReportMode)
+          .onChange(async (value: SvgBatchReportMode) => {
+            this.plugin.settings.svgBatchReportMode = value;
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
       .setName("Image filename template")
-      .setDesc("Supports {{name}}, {{rawName}}, {{format}}, {{scale}}, {{date}}, and {{time}}.")
+      .setDesc("Supports {{name}}, {{rawName}}, {{note}}, {{folder}}, {{heading}}, {{index}}, {{format}}, {{scale}}, {{date}}, and {{time}}.")
       .addText((text) => {
         text
           .setPlaceholder("{{name}}")
@@ -1288,6 +1815,21 @@ class OwenExporterSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
+      .setName("HTML export profile")
+      .setDesc("Apply a preset for common HTML export destinations.")
+      .addDropdown((dropdown) => {
+        dropdown
+          .addOption("custom", "Custom")
+          .addOption("obsidian-document", "Obsidian-like document")
+          .addOption("portable-document", "Portable document")
+          .addOption("clean-fragment", "Clean fragment")
+          .setValue(this.plugin.settings.htmlExportProfile)
+          .onChange(async (value: HtmlExportProfile) => {
+            await this.applyHtmlProfile(value);
+          });
+      });
+
+    new Setting(containerEl)
       .setName("HTML output folder")
       .setDesc("Vault-relative folder for saved HTML selections.")
       .addText((text) => {
@@ -1302,7 +1844,7 @@ class OwenExporterSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("HTML filename template")
-      .setDesc("Supports {{name}}, {{rawName}}, {{format}}, {{date}}, and {{time}}.")
+      .setDesc("Supports {{name}}, {{rawName}}, {{note}}, {{folder}}, {{heading}}, {{index}}, {{format}}, {{date}}, and {{time}}.")
       .addText((text) => {
         text
           .setPlaceholder("{{name}}")
@@ -1322,6 +1864,7 @@ class OwenExporterSettingTab extends PluginSettingTab {
           .addOption("fragment", "HTML fragment only")
           .setValue(this.plugin.settings.htmlSaveMode)
           .onChange(async (value: HtmlSaveMode) => {
+            this.markCustomHtmlProfile();
             this.plugin.settings.htmlSaveMode = value;
             await this.plugin.saveSettings();
           });
@@ -1337,7 +1880,23 @@ class OwenExporterSettingTab extends PluginSettingTab {
           .addOption("clean", "Clean HTML")
           .setValue(this.plugin.settings.htmlStyleMode)
           .onChange(async (value: HtmlStyleMode) => {
+            this.markCustomHtmlProfile();
             this.plugin.settings.htmlStyleMode = value;
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Clipboard format")
+      .setDesc("Choose which clipboard formats are written by HTML copy actions.")
+      .addDropdown((dropdown) => {
+        dropdown
+          .addOption("html-and-text", "HTML and plain text")
+          .addOption("html", "HTML only")
+          .addOption("text", "Plain text only")
+          .setValue(this.plugin.settings.htmlClipboardMode)
+          .onChange(async (value: HtmlClipboardMode) => {
+            this.plugin.settings.htmlClipboardMode = value;
             await this.plugin.saveSettings();
           });
       });
@@ -1350,9 +1909,23 @@ class OwenExporterSettingTab extends PluginSettingTab {
           .setPlaceholder("{{name}} export")
           .setValue(this.plugin.settings.htmlDocumentTitle)
           .onChange(async (value) => {
+            this.markCustomHtmlProfile();
             this.plugin.settings.htmlDocumentTitle = value.trim() || DEFAULT_SETTINGS.htmlDocumentTitle;
             await this.plugin.saveSettings();
           });
       });
+  }
+
+  private async applyHtmlProfile(profile: HtmlExportProfile) {
+    this.plugin.settings.htmlExportProfile = profile;
+    if (profile !== "custom") {
+      Object.assign(this.plugin.settings, HTML_EXPORT_PROFILES[profile]);
+    }
+    await this.plugin.saveSettings();
+    this.display();
+  }
+
+  private markCustomHtmlProfile() {
+    this.plugin.settings.htmlExportProfile = "custom";
   }
 }

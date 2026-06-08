@@ -25,6 +25,10 @@ test("renderFilenameTemplate replaces tokens and slugifies the final name", () =
     renderFilenameTemplate("{{rawName}} @ {{scale}}x {{date}}", { rawName: "My Diagram", scale: 2, date: "2026-06-08" }, "fallback"),
     "my-diagram-2x-2026-06-08",
   );
+  assert.equal(
+    renderFilenameTemplate("{{folder}}-{{note}}-{{index}}-{{heading}}", { folder: "daily", note: "plan", index: 3, heading: "Next Steps" }, "fallback"),
+    "daily-plan-3-next-steps",
+  );
   assert.equal(renderFilenameTemplate("", { name: "note" }, "fallback"), "note");
 });
 
