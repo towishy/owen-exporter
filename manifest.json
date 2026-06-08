@@ -1,7 +1,7 @@
 {
   "id": "owen-exporter",
   "name": "Owen Exporter",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "minAppVersion": "1.5.0",
   "description": "Export SVG embeds as PNG/JPEG and copy or save selected Markdown as HTML.",
   "author": "Owen Lee",
