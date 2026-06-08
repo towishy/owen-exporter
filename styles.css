@@ -30,7 +30,10 @@
 }
 
 .owen-exporter-svg-preview-modal,
-.owen-exporter-history-modal {
+.owen-exporter-history-modal,
+.owen-exporter-job-modal,
+.owen-exporter-compare-modal,
+.owen-exporter-profile-switcher-modal {
   max-width: min(920px, 92vw);
 }
 
@@ -133,6 +136,82 @@
   gap: 4px;
 }
 
+.owen-exporter-job-list,
+.owen-exporter-profile-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.owen-exporter-job-row,
+.owen-exporter-profile-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-secondary);
+}
+
+.owen-exporter-job-row strong,
+.owen-exporter-profile-row strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.owen-exporter-job-row span {
+  color: var(--text-muted);
+  font-size: 0.86em;
+}
+
+.owen-exporter-job-row.is-running {
+  border-color: var(--text-accent);
+}
+
+.owen-exporter-job-row.is-success span {
+  color: var(--text-success);
+}
+
+.owen-exporter-job-row.is-failed span {
+  color: var(--text-error);
+}
+
+.owen-exporter-compare-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(220px, 1fr));
+  gap: 12px;
+  max-height: min(70vh, 720px);
+  overflow: auto;
+}
+
+.owen-exporter-compare-pane {
+  min-width: 0;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-primary);
+}
+
+.owen-exporter-compare-pane h3 {
+  margin: 0;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  font-size: 0.95em;
+}
+
+.owen-exporter-compare-content {
+  max-height: 620px;
+  overflow: auto;
+  padding: 14px;
+}
+
+.owen-exporter-settings-group-body textarea {
+  min-height: 110px;
+  min-width: min(420px, 100%);
+}
+
 .owen-exporter-settings .setting-item {
   border-top: 0;
 }
@@ -222,6 +301,10 @@
 }
 
 @media (max-width: 720px) {
+  .owen-exporter-compare-grid {
+    grid-template-columns: 1fr;
+  }
+
   .owen-exporter-settings-group-header {
     padding: 14px 16px;
   }

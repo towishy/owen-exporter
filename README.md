@@ -57,11 +57,17 @@ HTML settings include a vault output folder, a filename template, full document 
 Profiles can switch quickly between Obsidian-like documents, portable documents, and clean fragments. Clipboard exports can write HTML plus plain text, HTML only, or plain text only.
 Custom HTML profiles can save output folders, templates, save mode, style mode, clipboard format, document title, and HTML quality options.
 Quality options include frontmatter exclusion, heading ID preservation, callout class preservation, and internal link conversion to Obsidian URIs.
+Asset handling can keep image paths, rewrite them as relative paths, copy local images to an asset folder, or inline images as base64 data URLs.
+Full-document HTML exports can use a custom template with tokens such as `{{title}}`, `{{content}}`, `{{sourcePath}}`, `{{style}}`, `{{date}}`, and `{{time}}`.
+Notes can override export behavior with frontmatter under `owen-export`, including `profile`, `filename`, `style`, `saveMode`, `title`, and `assetMode`.
 
 By default, clipboard exports write both `text/html` and plain text, so pasting into rich editors keeps formatting while plain-text destinations receive readable text.
 
 Recent export commands let you run the last export again, open the last exported file, reveal it in the system file manager, or copy its path.
 The export history command shows recent saved files with open, reveal, and copy-path actions. Folder notes and linked notes can also be exported as HTML batches.
+Batch HTML exports show a progress queue, can write `export-manifest.json`, and changed-only commands can skip notes that have not changed since the last manifest.
+Validation commands can write a Markdown report for broken internal links, missing image assets, external image references, frontmatter handling, and SVG export warnings.
+Compare preview commands show Obsidian-like, Portable, and Clean HTML side by side for the selected Markdown or current note.
 
 Workflow automation settings can open, reveal, or copy the path of saved files after export. SVG image exports saved to the vault can optionally insert a Markdown image link at the active cursor.
 Settings can be exported to a JSON file in the vault and imported back from clipboard JSON.
@@ -73,6 +79,8 @@ npm install
 npm run test
 npm run build
 ```
+
+After committing a clean release build, `npm run release -- "Release notes"` checks the worktree, builds, creates a numeric tag matching `package.json`, pushes `main` and the tag, and creates a GitHub release with `main.js`, `manifest.json`, and `styles.css`.
 
 For local Obsidian testing, copy or symlink `manifest.json`, `main.js`, and optionally `styles.css` into a vault plugin folder such as:
 
