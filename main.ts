@@ -820,7 +820,7 @@ class OwenExporterSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    new Setting(containerEl).setName("Export settings").setHeading();
+    new Setting(containerEl).setName("Export options").setHeading();
 
     new Setting(containerEl)
       .setName("Default image format")
