@@ -17,6 +17,7 @@ import {
     TFile,
     normalizePath,
     requestUrl,
+    setIcon,
 } from "obsidian";
 import {
     getSvgDimensionsFromText,
@@ -1703,8 +1704,23 @@ class OwenExporterSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
+    containerEl.addClass("owen-exporter-settings");
 
-    new Setting(containerEl)
+    const settingsRoot = containerEl.createDiv({ cls: "owen-exporter-settings-root" });
+    const imageGroup = this.createSettingsGroup(
+      settingsRoot,
+      "SVG image export",
+      "Configure rasterized SVG downloads, vault saves, filenames, and batch reports.",
+      "image-down",
+    );
+    const htmlGroup = this.createSettingsGroup(
+      settingsRoot,
+      "Markdown to HTML",
+      "Configure HTML preview, document output, clipboard formats, and filename templates.",
+      "file-code",
+    );
+
+    new Setting(imageGroup)
       .setName("Default image format")
       .setDesc("Format used by the primary SVG download menu item.")
       .addDropdown((dropdown) => {
@@ -1718,7 +1734,7 @@ class OwenExporterSettingTab extends PluginSettingTab {
           });
       });
 
-    new Setting(containerEl)
+    new Setting(imageGroup)
       .setName("Image save location")
       .setDesc("Ask for a save location or save directly into a vault folder.")
       .addDropdown((dropdown) => {
@@ -1732,7 +1748,7 @@ class OwenExporterSettingTab extends PluginSettingTab {
           });
       });
 
-    new Setting(containerEl)
+    new Setting(imageGroup)
       .setName("Image output folder")
       .setDesc("Vault-relative folder for direct SVG image exports and batch exports.")
       .addText((text) => {
@@ -1745,7 +1761,7 @@ class OwenExporterSettingTab extends PluginSettingTab {
           });
       });
 
-    new Setting(containerEl)
+    new Setting(imageGroup)
       .setName("SVG batch report")
       .setDesc("Write a Markdown report for batch SVG exports.")
       .addDropdown((dropdown) => {
@@ -1760,7 +1776,7 @@ class OwenExporterSettingTab extends PluginSettingTab {
           });
       });
 
-    new Setting(containerEl)
+    new Setting(imageGroup)
       .setName("Image filename template")
       .setDesc("Supports {{name}}, {{rawName}}, {{note}}, {{folder}}, {{heading}}, {{index}}, {{format}}, {{scale}}, {{date}}, and {{time}}.")
       .addText((text) => {
@@ -1773,7 +1789,7 @@ class OwenExporterSettingTab extends PluginSettingTab {
           });
       });
 
-    new Setting(containerEl)
+    new Setting(imageGroup)
       .setName("Image quality")
       .setDesc("JPEG quality from 0.1 to 1.0. PNG ignores this setting.")
       .addSlider((slider) => {
@@ -1787,7 +1803,7 @@ class OwenExporterSettingTab extends PluginSettingTab {
           });
       });
 
-    new Setting(containerEl)
+    new Setting(imageGroup)
       .setName("Image scale")
       .setDesc("Rasterization multiplier. Use 2 or 3 for high-resolution exports.")
       .addSlider((slider) => {
@@ -1801,7 +1817,7 @@ class OwenExporterSettingTab extends PluginSettingTab {
           });
       });
 
-    new Setting(containerEl)
+    new Setting(imageGroup)
       .setName("Image background")
       .setDesc("Canvas background used for JPEG and transparent SVGs. Use a CSS color such as #FFFFFF.")
       .addText((text) => {
@@ -1814,7 +1830,7 @@ class OwenExporterSettingTab extends PluginSettingTab {
           });
       });
 
-    new Setting(containerEl)
+    new Setting(htmlGroup)
       .setName("HTML export profile")
       .setDesc("Apply a preset for common HTML export destinations.")
       .addDropdown((dropdown) => {
@@ -1829,7 +1845,7 @@ class OwenExporterSettingTab extends PluginSettingTab {
           });
       });
 
-    new Setting(containerEl)
+    new Setting(htmlGroup)
       .setName("HTML output folder")
       .setDesc("Vault-relative folder for saved HTML selections.")
       .addText((text) => {
@@ -1842,7 +1858,7 @@ class OwenExporterSettingTab extends PluginSettingTab {
           });
       });
 
-    new Setting(containerEl)
+    new Setting(htmlGroup)
       .setName("HTML filename template")
       .setDesc("Supports {{name}}, {{rawName}}, {{note}}, {{folder}}, {{heading}}, {{index}}, {{format}}, {{date}}, and {{time}}.")
       .addText((text) => {
@@ -1855,7 +1871,7 @@ class OwenExporterSettingTab extends PluginSettingTab {
           });
       });
 
-    new Setting(containerEl)
+    new Setting(htmlGroup)
       .setName("HTML save mode")
       .setDesc("Save a full HTML document or only the rendered selection fragment.")
       .addDropdown((dropdown) => {
@@ -1870,7 +1886,7 @@ class OwenExporterSettingTab extends PluginSettingTab {
           });
       });
 
-    new Setting(containerEl)
+    new Setting(htmlGroup)
       .setName("HTML style mode")
       .setDesc("Choose how much of the active Obsidian preview styling is inlined.")
       .addDropdown((dropdown) => {
@@ -1886,7 +1902,7 @@ class OwenExporterSettingTab extends PluginSettingTab {
           });
       });
 
-    new Setting(containerEl)
+    new Setting(htmlGroup)
       .setName("Clipboard format")
       .setDesc("Choose which clipboard formats are written by HTML copy actions.")
       .addDropdown((dropdown) => {
@@ -1901,7 +1917,7 @@ class OwenExporterSettingTab extends PluginSettingTab {
           });
       });
 
-    new Setting(containerEl)
+    new Setting(htmlGroup)
       .setName("HTML document title")
       .setDesc("Title used for full HTML documents. Supports the same filename tokens.")
       .addText((text) => {
@@ -1914,6 +1930,20 @@ class OwenExporterSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           });
       });
+  }
+
+  private createSettingsGroup(parent: HTMLElement, title: string, description: string, icon: string): HTMLElement {
+    const group = parent.createDiv({ cls: "owen-exporter-settings-group" });
+    const header = group.createDiv({ cls: "owen-exporter-settings-group-header" });
+    const iconEl = header.createDiv({ cls: "owen-exporter-settings-group-icon" });
+    iconEl.setAttr("aria-hidden", "true");
+    setIcon(iconEl, icon);
+
+    const label = header.createDiv({ cls: "owen-exporter-settings-group-label" });
+    label.createEl("h3", { text: title });
+    label.createEl("p", { text: description });
+
+    return group.createDiv({ cls: "owen-exporter-settings-group-body" });
   }
 
   private async applyHtmlProfile(profile: HtmlExportProfile) {
