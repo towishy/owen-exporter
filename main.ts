@@ -93,6 +93,7 @@ const HTML_STYLE_SELECTOR = [
   "h4",
   "h5",
   "h6",
+  "hr",
   ".callout",
   ".callout-title",
   ".callout-title-inner",
@@ -725,7 +726,46 @@ export default class OwenExporterPlugin extends Plugin {
         styles[variable] = value;
       }
     }
+    this.normalizePortableHtmlStyles(element, styles);
     element.setCssProps(styles);
+  }
+
+  private normalizePortableHtmlStyles(element: HTMLElement, styles: Record<string, string>) {
+    if (element.matches("h1, h2, h3, h4, h5, h6")) {
+      this.normalizeHeadingStyles(styles);
+      return;
+    }
+
+    if (element.matches("hr")) {
+      this.normalizeRuleStyles(styles);
+    }
+  }
+
+  private normalizeHeadingStyles(styles: Record<string, string>) {
+    for (const property of ["display", "flex", "height", "min-width", "max-width", "overflow", "overflow-x", "overflow-y", "width"]) {
+      delete styles[property];
+    }
+    this.clampPixelStyle(styles, "margin-bottom", 12);
+    this.clampPixelStyle(styles, "padding-bottom", 8);
+  }
+
+  private normalizeRuleStyles(styles: Record<string, string>) {
+    for (const property of ["height", "min-width", "max-width", "overflow", "overflow-x", "overflow-y", "width"]) {
+      delete styles[property];
+    }
+    this.clampPixelStyle(styles, "margin-top", 12);
+    this.clampPixelStyle(styles, "margin-bottom", 16);
+  }
+
+  private clampPixelStyle(styles: Record<string, string>, property: string, maxPixels: number) {
+    const value = styles[property];
+    if (!value?.endsWith("px")) {
+      return;
+    }
+    const pixels = Number.parseFloat(value);
+    if (Number.isFinite(pixels) && pixels > maxPixels) {
+      styles[property] = `${maxPixels}px`;
+    }
   }
 
   private getActiveSourcePath(): string | null {
