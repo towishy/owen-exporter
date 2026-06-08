@@ -1,0 +1,12 @@
+.owen-exporter-render-root {
+  position: fixed;
+  left: -10000px;
+  top: 0;
+  width: 760px;
+  pointer-events: none;
+  visibility: hidden;
+}
+
+.owen-exporter-download-link {
+  display: none;
+}

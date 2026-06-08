@@ -512,7 +512,7 @@ export default class OwenExporterPlugin extends Plugin {
     const link = activeDocument.createElement("a");
     link.href = objectUrl;
     link.download = filename;
-    link.setCssProps({ display: "none" });
+    link.addClass("owen-exporter-download-link");
     activeDocument.body.appendChild(link);
     link.click();
     link.remove();
@@ -683,14 +683,6 @@ export default class OwenExporterPlugin extends Plugin {
     container.addClass("markdown-preview-view");
     container.addClass("markdown-rendered");
     container.setAttribute("aria-hidden", "true");
-    container.setCssProps({
-      position: "fixed",
-      left: "-10000px",
-      top: "0",
-      width: this.getActiveMarkdownWidth(),
-      "pointer-events": "none",
-      visibility: "hidden",
-    });
     return container;
   }
 
@@ -828,7 +820,7 @@ class OwenExporterSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    new Setting(containerEl).setName("Owen Exporter").setHeading();
+    new Setting(containerEl).setName("Export settings").setHeading();
 
     new Setting(containerEl)
       .setName("Default image format")
