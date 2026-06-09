@@ -17,6 +17,7 @@ import {
     TFile,
     normalizePath,
     requestUrl,
+    sanitizeHTMLToDom,
     setIcon,
 } from "obsidian";
 import {
@@ -38,6 +39,12 @@ type SvgBatchReportMode = "never" | "on-failure" | "always";
 type RecentExportKind = "html-copy" | "html-save" | "image-save" | "report";
 type HtmlAssetMode = "keep" | "relative" | "copy" | "base64";
 type ExportJobStatus = "pending" | "running" | "success" | "failed" | "skipped";
+type DomConstructorWindow = Window & {
+  Element: typeof Element;
+  HTMLElement: typeof HTMLElement;
+  HTMLImageElement: typeof HTMLImageElement;
+  SVGSVGElement: typeof SVGSVGElement;
+};
 
 interface OwenExporterSettings {
   imageFormat: ExportImageFormat;
@@ -704,13 +711,13 @@ export default class OwenExporterPlugin extends Plugin {
 
     this.addCommand({
       id: "export-settings-json",
-      name: "Export Owen Exporter settings JSON",
+      name: "Export settings JSON",
       callback: () => void this.exportSettingsJson(),
     });
 
     this.addCommand({
       id: "import-settings-json-from-clipboard",
-      name: "Import Owen Exporter settings JSON from clipboard",
+      name: "Import settings JSON from clipboard",
       callback: () => void this.importSettingsJsonFromClipboard(),
     });
 
@@ -789,7 +796,8 @@ export default class OwenExporterPlugin extends Plugin {
   }
 
   async loadSettings() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    const loadedSettings = await this.loadData() as Partial<OwenExporterSettings> | null;
+    this.settings = { ...DEFAULT_SETTINGS, ...(loadedSettings ?? {}) };
   }
 
   async saveSettings() {
@@ -1145,11 +1153,15 @@ export default class OwenExporterPlugin extends Plugin {
   }
 
   private isElement(value: unknown): value is Element {
-    return value instanceof this.getActiveDomWindow().Element;
+    return this.isDomNode(value) && value.instanceOf(this.getActiveDomWindow().Element);
   }
 
   private isHtmlElement(value: unknown): value is HTMLElement {
-    return value instanceof this.getActiveDomWindow().HTMLElement;
+    return this.isDomNode(value) && value.instanceOf(this.getActiveDomWindow().HTMLElement);
+  }
+
+  private isDomNode(value: unknown): value is Node {
+    return Boolean(value && typeof value === "object" && typeof (value as { instanceOf?: unknown }).instanceOf === "function");
   }
 
   private isImageElement(value: Element | null): value is HTMLImageElement {
@@ -1157,7 +1169,7 @@ export default class OwenExporterPlugin extends Plugin {
       return false;
     }
     const ownerWindow = this.getOwnerDomWindow(value);
-    return value instanceof ownerWindow.HTMLImageElement;
+    return value.instanceOf(ownerWindow.HTMLImageElement);
   }
 
   private isSvgElement(value: Element | null): value is SVGSVGElement {
@@ -1165,15 +1177,15 @@ export default class OwenExporterPlugin extends Plugin {
       return false;
     }
     const ownerWindow = this.getOwnerDomWindow(value);
-    return value instanceof ownerWindow.SVGSVGElement;
+    return value.instanceOf(ownerWindow.SVGSVGElement);
   }
 
-  private getActiveDomWindow(): Window & typeof globalThis {
-    return activeWindow as Window & typeof globalThis;
+  private getActiveDomWindow(): DomConstructorWindow {
+    return activeWindow as DomConstructorWindow;
   }
 
-  private getOwnerDomWindow(element: Element): Window & typeof globalThis {
-    return (element.ownerDocument.defaultView ?? activeWindow) as Window & typeof globalThis;
+  private getOwnerDomWindow(element: Element): DomConstructorWindow {
+    return (element.ownerDocument.defaultView ?? activeWindow) as DomConstructorWindow;
   }
 
   private isSvgImage(image: HTMLImageElement): boolean {
@@ -1417,7 +1429,7 @@ export default class OwenExporterPlugin extends Plugin {
     activeDocument.body.appendChild(link);
     link.click();
     link.remove();
-    activeWindow.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
   }
 
   private async getSvgText(target: SvgTarget): Promise<string> {
@@ -1990,7 +2002,7 @@ export default class OwenExporterPlugin extends Plugin {
 
   private htmlToPlainText(html: string): string {
     const container = activeDocument.createElement("div");
-    container.innerHTML = html;
+    container.appendChild(sanitizeHTMLToDom(html));
     return container.innerText.trim() || container.textContent?.trim() || "";
   }
 
@@ -2685,7 +2697,7 @@ class HtmlPreviewModal extends Modal {
     const preview = frame.createDiv({ cls: "owen-exporter-html-preview-content" });
     preview.addClass("markdown-preview-view");
     preview.addClass("markdown-rendered");
-    preview.innerHTML = this.options.html;
+    preview.appendChild(sanitizeHTMLToDom(this.options.html));
   }
 
   onClose() {
@@ -2906,7 +2918,7 @@ class HtmlCompareModal extends Modal {
       const content = column.createDiv({ cls: "owen-exporter-compare-content" });
       content.addClass("markdown-preview-view");
       content.addClass("markdown-rendered");
-      content.innerHTML = pane.html;
+      content.appendChild(sanitizeHTMLToDom(pane.html));
     }
   }
 
@@ -3422,7 +3434,9 @@ class OwenExporterSettingTab extends PluginSettingTab {
     setIcon(iconEl, icon);
 
     const label = header.createDiv({ cls: "owen-exporter-settings-group-label" });
-    label.createEl("h3", { text: title });
+    new Setting(label)
+      .setName(title)
+      .setHeading();
     label.createEl("p", { text: description });
 
     return group.createDiv({ cls: "owen-exporter-settings-group-body" });
