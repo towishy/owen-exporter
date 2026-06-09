@@ -2962,6 +2962,10 @@ class OwenExporterSettingTab extends PluginSettingTab {
   }
 
   display(): void {
+    this.renderSettings();
+  }
+
+  private renderSettings(): void {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.addClass("owen-exporter-settings");
@@ -3426,18 +3430,13 @@ class OwenExporterSettingTab extends PluginSettingTab {
       });
   }
 
-  private createSettingsGroup(parent: HTMLElement, title: string, description: string, icon: string): HTMLElement {
+  private createSettingsGroup(parent: HTMLElement, title: string, description: string, _icon: string): HTMLElement {
     const group = parent.createDiv({ cls: "owen-exporter-settings-group" });
     const header = group.createDiv({ cls: "owen-exporter-settings-group-header" });
-    const iconEl = header.createDiv({ cls: "owen-exporter-settings-group-icon" });
-    iconEl.setAttr("aria-hidden", "true");
-    setIcon(iconEl, icon);
-
-    const label = header.createDiv({ cls: "owen-exporter-settings-group-label" });
-    new Setting(label)
+    new Setting(header)
       .setName(title)
+      .setDesc(description)
       .setHeading();
-    label.createEl("p", { text: description });
 
     return group.createDiv({ cls: "owen-exporter-settings-group-body" });
   }
@@ -3448,7 +3447,7 @@ class OwenExporterSettingTab extends PluginSettingTab {
       Object.assign(this.plugin.settings, HTML_EXPORT_PROFILES[profile]);
     }
     await this.plugin.saveSettings();
-    this.display();
+    this.renderSettings();
   }
 
   private async saveCurrentHtmlProfile(name: string) {
@@ -3477,7 +3476,7 @@ class OwenExporterSettingTab extends PluginSettingTab {
     this.plugin.settings.htmlCustomProfiles = profiles;
     await this.plugin.saveSettings();
     new Notice(`Saved HTML profile: ${name}`);
-    this.display();
+    this.renderSettings();
   }
 
   private async applyCustomHtmlProfile(name: string) {
@@ -3503,7 +3502,7 @@ class OwenExporterSettingTab extends PluginSettingTab {
     });
     await this.plugin.saveSettings();
     new Notice(`Applied HTML profile: ${name}`);
-    this.display();
+    this.renderSettings();
   }
 
   private async deleteCustomHtmlProfile(name: string) {
@@ -3515,7 +3514,7 @@ class OwenExporterSettingTab extends PluginSettingTab {
     }
     await this.plugin.saveSettings();
     new Notice(`Deleted HTML profile: ${name}`);
-    this.display();
+    this.renderSettings();
   }
 
   private markCustomHtmlProfile() {
