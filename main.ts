@@ -211,7 +211,7 @@ interface NoteExportMetadata {
 }
 
 interface SvgTarget {
-  element: SVGSVGElement | HTMLImageElement;
+  element: HTMLImageElement;
   sourcePath: string | null;
   suggestedName: string;
 }
@@ -1088,15 +1088,6 @@ export default class OwenExporterPlugin extends Plugin {
         continue;
       }
 
-      const inlineSvg = this.findClosestOrChildSvg(element);
-      if (inlineSvg) {
-        return {
-          element: inlineSvg,
-          sourcePath: this.getActiveSourcePath(),
-          suggestedName: inlineSvg.getAttribute("aria-label") ?? inlineSvg.id ?? "inline-svg",
-        };
-      }
-
       const image = this.findClosestOrChildImage(element);
       if (image && this.isSvgImage(image)) {
         return {
@@ -1117,17 +1108,6 @@ export default class OwenExporterPlugin extends Plugin {
       elements.unshift(event.target);
     }
     return elements;
-  }
-
-  private findClosestOrChildSvg(element: Element): SVGSVGElement | null {
-    const closest = element.closest("svg");
-    if (this.isSvgElement(closest)) {
-      return closest;
-    }
-    if (!this.isLikelyImageEmbed(element)) {
-      return null;
-    }
-    return element.querySelector("svg");
   }
 
   private findClosestOrChildImage(element: Element): HTMLImageElement | null {
@@ -1172,14 +1152,6 @@ export default class OwenExporterPlugin extends Plugin {
     return value.instanceOf(ownerWindow.HTMLImageElement);
   }
 
-  private isSvgElement(value: Element | null): value is SVGSVGElement {
-    if (!value) {
-      return false;
-    }
-    const ownerWindow = this.getOwnerDomWindow(value);
-    return value.instanceOf(ownerWindow.SVGSVGElement);
-  }
-
   private getActiveDomWindow(): DomConstructorWindow {
     return activeWindow as DomConstructorWindow;
   }
@@ -1190,8 +1162,7 @@ export default class OwenExporterPlugin extends Plugin {
 
   private isSvgImage(image: HTMLImageElement): boolean {
     const source = image.currentSrc || image.src || image.getAttribute("src") || "";
-    const alt = image.getAttribute("alt") || "";
-    return /\.svg(?:[?#].*)?$/i.test(source) || /\.svg$/i.test(alt) || image.classList.contains("svg");
+    return this.getImageVaultPath(image) !== null || /^https?:\/\/.*\.svg(?:[?#].*)?$/i.test(source);
   }
 
   private getImageVaultPath(image: HTMLImageElement): string | null {
@@ -1433,10 +1404,6 @@ export default class OwenExporterPlugin extends Plugin {
   }
 
   private async getSvgText(target: SvgTarget): Promise<string> {
-    if (this.isSvgElement(target.element)) {
-      return new XMLSerializer().serializeToString(target.element);
-    }
-
     if (target.sourcePath) {
       const file = this.app.vault.getAbstractFileByPath(target.sourcePath);
       if (file instanceof TFile) {
