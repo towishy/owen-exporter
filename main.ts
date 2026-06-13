@@ -2507,7 +2507,10 @@ export default class OwenExporterPlugin extends Plugin {
   }
 
   private escapeMarkdownTableCell(value: string): string {
-    return value.replace(/\|/g, "\\|").replace(/\n/g, " ");
+    return value
+      .replace(/\\/g, "\\\\")
+      .replace(/\|/g, "\\|")
+      .replace(/\r?\n/g, " ");
   }
 
   private getSvgFilesFromMarkdown(markdown: string, sourcePath: string): TFile[] {
