@@ -2,6 +2,9 @@
 
 # Owen Exporter
 
+> [!NOTE]
+> **Language:** Owen Exporter follows Obsidian by default: Korean uses Korean, while every other locale uses English. Override it from **Settings → Owen Exporter → Interface → Language**.
+
 ![Owen Exporter SVG download menu](screenshot/svgtodown.png)
 
 ![Owen Exporter Markdown to HTML menu](screenshot/mdtohtml.png)
