@@ -3472,13 +3472,18 @@ class OwenExporterSettingTab extends PluginSettingTab {
       });
   }
 
-  private createSettingsGroup(parent: HTMLElement, title: string, description: string, _icon: string): HTMLElement {
+  private createSettingsGroup(parent: HTMLElement, title: string, description: string, icon: string): HTMLElement {
     const group = parent.createDiv({ cls: "owen-exporter-settings-group" });
     const header = group.createDiv({ cls: "owen-exporter-settings-group-header" });
-    new Setting(header)
+    const heading = new Setting(header)
       .setName(title)
       .setDesc(description)
       .setHeading();
+    heading.settingEl.dataset.owenSection = icon;
+    const glyph = heading.settingEl.createDiv({ cls: "owen-exporter-settings-section-glyph" });
+    glyph.setAttr("aria-hidden", "true");
+    setIcon(glyph, icon);
+    heading.settingEl.insertBefore(glyph, heading.infoEl);
 
     return group.createDiv({ cls: "owen-exporter-settings-group-body" });
   }
