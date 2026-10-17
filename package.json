@@ -1,6 +1,6 @@
 {
   "name": "owen-exporter",
-  "version": "0.1.18",
+  "version": "0.1.19",
   "description": "Obsidian plugin for exporting SVG embeds and Markdown selections.",
   "main": "main.js",
   "scripts": {
@@ -21,8 +21,8 @@
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^20.14.10",
-    "esbuild": "^0.23.0",
-    "obsidian": "1.13.1",
+    "esbuild": "^0.28.2",
+    "obsidian": "1.14.4",
     "tslib": "^2.6.3",
     "typescript": "^5.5.3"
   }
