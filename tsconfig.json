@@ -10,10 +10,11 @@
     "importHelpers": true,
     "isolatedModules": true,
     "strictNullChecks": true,
+    "strictBindCallApply": true,
+    "types": ["node"],
     "lib": [
       "DOM",
-      "ES6",
-      "ES7"
+      "ES2020"
     ]
   },
   "include": [

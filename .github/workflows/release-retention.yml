@@ -1,0 +1,126 @@
+name: Keep latest release only
+
+on:
+  release:
+    types: [published]
+  workflow_run:
+    workflows: [Release, Attest release assets]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      keep_tag:
+        description: Exact current latest release tag to retain
+        required: true
+        type: string
+      dry_run:
+        description: Show the deletion plan without deleting anything
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: release-retention
+  cancel-in-progress: false
+
+jobs:
+  retain:
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'release' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Retain the verified latest release and its tag
+        uses: actions/github-script@v9.0.0
+        env:
+          RETENTION_KEEP_TAG: ${{ inputs.keep_tag }}
+          RETENTION_DRY_RUN: ${{ inputs.dry_run }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const latest = (await github.rest.repos.getLatestRelease({ owner, repo })).data;
+            const manual = context.eventName === "workflow_dispatch";
+            const dryRun = manual && process.env.RETENTION_DRY_RUN !== "false";
+            if (manual && process.env.RETENTION_KEEP_TAG !== latest.tag_name) {
+              throw new Error("keep_tag must match GitHub's current latest release.");
+            }
+            let object = (await github.rest.git.getRef({ owner, repo, ref: `tags/${latest.tag_name}` })).data.object;
+            const originalTagObject = object.sha;
+            const seen = new Set();
+            while (object.type === "tag") {
+              if (seen.has(object.sha)) throw new Error("Cyclic annotated release tag.");
+              seen.add(object.sha);
+              object = (await github.rest.git.getTag({ owner, repo, tag_sha: object.sha })).data.object;
+            }
+            if (object.type !== "commit") throw new Error("The latest release tag must resolve to a commit.");
+            if (context.eventName === "workflow_run" && context.payload.workflow_run.head_sha !== object.sha) {
+              core.notice("No cleanup: the completed workflow did not validate the current latest release.");
+              return;
+            }
+            if (context.eventName === "release") {
+              const workflow = repo.toLowerCase() === "owen-mermaid" ? "attest-release-assets.yml" : "release.yml";
+              const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+                owner, repo, workflow_id: workflow, head_sha: object.sha, status: "success", per_page: 100,
+              });
+              if (!runs.some(run => run.head_sha === object.sha && run.conclusion === "success")) {
+                core.notice("No cleanup: waiting for a successful release workflow for the exact latest source commit.");
+                return;
+              }
+            }
+            const required = repo.toLowerCase() === "owen-graphite"
+              ? ["manifest.json", "theme.css"] : ["manifest.json", "main.js", "styles.css"];
+            for (const name of required) {
+              if (!latest.assets.some(asset => asset.name === name && asset.size > 0)) {
+                throw new Error(`Refusing cleanup: latest release is missing ${name}.`);
+              }
+            }
+            const releases = await github.paginate(github.rest.repos.listReleases, { owner, repo, per_page: 100 });
+            const tags = await github.paginate(github.rest.git.listMatchingRefs, { owner, repo, ref: "tags/" });
+            const oldReleases = releases.filter(release => release.id !== latest.id);
+            const oldTags = tags.filter(tag => tag.ref !== `refs/tags/${latest.tag_name}`);
+            if (!manual) {
+              const current = /^v?(\d+)\.(\d+)\.(\d+)$/.exec(latest.tag_name);
+              for (const tag of oldTags) {
+                const other = /^refs\/tags\/v?(\d+)\.(\d+)\.(\d+)$/.exec(tag.ref);
+                if (!current || !other) continue;
+                for (let i = 1; i <= 3; i++) {
+                  if (BigInt(other[i]) > BigInt(current[i])) {
+                    throw new Error(`Cleanup deferred: newer tag ${tag.ref} has not finished its release.`);
+                  }
+                  if (BigInt(other[i]) < BigInt(current[i])) break;
+                }
+              }
+            }
+            core.info(JSON.stringify({
+              keep: latest.tag_name, dryRun,
+              releasesToDelete: oldReleases.map(release => ({ id: release.id, tag: release.tag_name })),
+              tagsToDelete: oldTags.map(tag => ({ ref: tag.ref, sha: tag.object.sha, type: tag.object.type })),
+            }, null, 2));
+            if (dryRun) return;
+            const assertLatest = async () => {
+              const current = (await github.rest.repos.getLatestRelease({ owner, repo })).data;
+              if (current.id !== latest.id || current.tag_name !== latest.tag_name) {
+                throw new Error("Latest release changed during cleanup; stopping before further deletions.");
+              }
+              const tag = (await github.rest.git.getRef({ owner, repo, ref: `tags/${latest.tag_name}` })).data;
+              if (tag.object.sha !== originalTagObject) {
+                throw new Error("Latest release tag changed during cleanup; stopping before further deletions.");
+              }
+            };
+            for (const release of oldReleases) {
+              await assertLatest();
+              await github.rest.repos.deleteRelease({ owner, repo, release_id: release.id });
+            }
+            for (const tag of oldTags) {
+              await assertLatest();
+              await github.rest.git.deleteRef({ owner, repo, ref: tag.ref.replace(/^refs\//, "") });
+            }
+            await assertLatest();
+            const remainingReleases = await github.paginate(github.rest.repos.listReleases, { owner, repo, per_page: 100 });
+            const remainingTags = await github.paginate(github.rest.git.listMatchingRefs, { owner, repo, ref: "tags/" });
+            if (remainingReleases.length !== 1 || remainingReleases[0].id !== latest.id ||
+                remainingTags.length !== 1 || remainingTags[0].ref !== `refs/tags/${latest.tag_name}`) {
+              throw new Error("Retention verification failed: expected exactly one release and its matching tag.");
+            }
+            core.notice(`Kept ${latest.tag_name}; deleted ${oldReleases.length} releases and ${oldTags.length} tags.`);

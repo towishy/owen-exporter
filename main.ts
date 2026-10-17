@@ -18,8 +18,12 @@ import {
     moment,
     normalizePath,
     requestUrl,
+    requireApiVersion,
     sanitizeHTMLToDom,
     setIcon,
+    setTooltip,
+    type SettingDefinitionGroup,
+    type SettingDefinitionRender,
 } from "obsidian";
 import {
     SvgDimensions,
@@ -1442,11 +1446,10 @@ export default class OwenExporterPlugin extends Plugin {
 
   private downloadBlobWithAnchor(blob: Blob, filename: string) {
     const objectUrl = URL.createObjectURL(blob);
-    const link = activeDocument.createElement("a");
+    const link = activeDocument.body.createEl("a");
     link.href = objectUrl;
     link.download = filename;
     link.addClass("owen-exporter-download-link");
-    activeDocument.body.appendChild(link);
     link.click();
     link.remove();
     window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
@@ -1473,7 +1476,8 @@ export default class OwenExporterPlugin extends Plugin {
   }
 
   private async rasterizeSvg(svgText: string, format: ExportImageFormat): Promise<ArrayBuffer> {
-    const image = activeDocument.createElement("img");
+    const fragment = activeDocument.createDocumentFragment();
+    const image = fragment.createEl("img");
     this.assertParsableSvg(svgText);
     const dimensions = getSvgDimensionsFromText(svgText);
     const scale = this.getImageScale();
@@ -1491,7 +1495,7 @@ export default class OwenExporterPlugin extends Plugin {
       const width = Math.max(1, Math.round(dimensions.width * scale));
       const height = Math.max(1, Math.round(dimensions.height * scale));
       this.assertCanvasSize(width, height);
-      const canvas = activeDocument.createElement("canvas");
+      const canvas = fragment.createEl("canvas");
       canvas.width = width;
       canvas.height = height;
       const context = canvas.getContext("2d");
@@ -2017,7 +2021,7 @@ export default class OwenExporterPlugin extends Plugin {
   }
 
   private htmlToPlainText(html: string): string {
-    const container = activeDocument.createElement("div");
+    const container = activeDocument.createDocumentFragment().createDiv();
     container.appendChild(sanitizeHTMLToDom(html));
     return container.innerText.trim() || container.textContent?.trim() || "";
   }
@@ -2035,7 +2039,7 @@ export default class OwenExporterPlugin extends Plugin {
   }
 
   private createHiddenMarkdownRenderHost(): HTMLDivElement {
-    const container = activeDocument.createElement("div");
+    const container = activeDocument.createDocumentFragment().createDiv();
     container.addClass("owen-exporter-render-root");
     container.addClass("markdown-preview-view");
     container.addClass("markdown-rendered");
@@ -2913,7 +2917,7 @@ class ExportJobModal extends Modal {
     for (const entry of this.entries) {
       const row = this.listEl.createDiv({ cls: `owen-exporter-job-row is-${entry.status}` });
       row.createEl("strong", { text: entry.label });
-      row.createSpan({ text: entry.detail ?? this.t(`common.status.${entry.status}` as TranslationKey) });
+      row.createSpan({ text: entry.detail ?? this.t(`common.status.${entry.status}`) });
     }
   }
 }
@@ -2970,6 +2974,9 @@ class ProfileSwitcherModal extends Modal {
   }
 }
 
+type SearchableExporterSetting = Omit<SettingDefinitionRender, "render"> & { render: (setting: Setting) => void };
+type SearchableExporterGroup = Omit<SettingDefinitionGroup, "type" | "items"> & { type: "group"; items: SearchableExporterSetting[] };
+
 class OwenExporterSettingTab extends PluginSettingTab {
   plugin: OwenExporterPlugin;
 
@@ -2979,24 +2986,46 @@ class OwenExporterSettingTab extends PluginSettingTab {
   }
 
   display(): void {
-    this.renderSettings();
+    this.displayLegacy();
   }
 
-  private renderSettings(): void {
+  private displayLegacy(): void {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.addClass("owen-exporter-settings");
-
     const settingsRoot = containerEl.createDiv({ cls: "owen-exporter-settings-root" });
+    for (const definition of this.getSettingDefinitions()) {
+      const group = settingsRoot.createDiv({ cls: "owen-exporter-settings-group" });
+      const header = group.createDiv({ cls: "owen-exporter-settings-group-header" });
+      const body = group.createDiv({ cls: "owen-exporter-settings-group-body" });
+      for (const [index, item] of definition.items.entries()) {
+        const setting = new Setting(index === 0 ? header : body).setName(item.name);
+        if (item.desc) setting.setDesc(item.desc);
+        item.render(setting);
+      }
+    }
+  }
+
+  private refresh(): void {
+    if (requireApiVersion("1.13.0")) this.update();
+    else this.displayLegacy();
+  }
+
+  getSettingDefinitions(): SearchableExporterGroup[] {
+    const definitions: SearchableExporterGroup[] = [];
+    const defineSetting = (group: SearchableExporterSetting[], name: string, desc: SettingDefinitionRender["desc"], configure: (setting: Setting) => Setting | void) => {
+      group.push({ name, desc, render: (setting) => {
+        this.prepareSettingsRow(setting);
+        configure(setting);
+      } });
+    };
     const interfaceGroup = this.createSettingsGroup(
-      settingsRoot,
+      definitions,
       this.plugin.t("settings.group.interface"),
       this.plugin.t("settings.group.interfaceDesc"),
       "languages",
     );
-    new Setting(interfaceGroup)
-      .setName(this.plugin.t("language.name"))
-      .setDesc(this.plugin.t("language.desc"))
+    defineSetting(interfaceGroup, this.plugin.t("language.name"), this.plugin.t("language.desc"), (setting) => setting
       .addDropdown((dropdown) => {
         dropdown
           .addOption("auto", this.plugin.t("language.auto"))
@@ -3007,37 +3036,35 @@ class OwenExporterSettingTab extends PluginSettingTab {
             this.plugin.settings.language = normalizeLocalePreference(value);
             await this.plugin.saveSettings();
             this.plugin.refreshCommandNames();
-            this.renderSettings();
+            this.refresh();
           });
-      });
+      }));
     const imageGroup = this.createSettingsGroup(
-      settingsRoot,
+      definitions,
       this.plugin.t("settings.group.image"),
       this.plugin.t("settings.group.imageDesc"),
       "image-down",
     );
     const htmlGroup = this.createSettingsGroup(
-      settingsRoot,
+      definitions,
       this.plugin.t("settings.group.html"),
       this.plugin.t("settings.group.htmlDesc"),
       "file-code",
     );
     const workflowGroup = this.createSettingsGroup(
-      settingsRoot,
+      definitions,
       this.plugin.t("settings.group.workflow"),
       this.plugin.t("settings.group.workflowDesc"),
       "workflow",
     );
     const backupGroup = this.createSettingsGroup(
-      settingsRoot,
+      definitions,
       this.plugin.t("settings.group.backup"),
       this.plugin.t("settings.group.backupDesc"),
       "archive-restore",
     );
 
-    new Setting(imageGroup)
-      .setName(this.plugin.t("settings.imageFormat.name"))
-      .setDesc(this.plugin.t("settings.imageFormat.desc"))
+    defineSetting(imageGroup, this.plugin.t("settings.imageFormat.name"), this.plugin.t("settings.imageFormat.desc"), (setting) => setting
       .addDropdown((dropdown) => {
         dropdown
           .addOption("png", "PNG")
@@ -3047,11 +3074,9 @@ class OwenExporterSettingTab extends PluginSettingTab {
             this.plugin.settings.imageFormat = value;
             await this.plugin.saveSettings();
           });
-      });
+      }));
 
-    new Setting(imageGroup)
-      .setName(this.plugin.t("settings.imageSave.name"))
-      .setDesc(this.plugin.t("settings.imageSave.desc"))
+    defineSetting(imageGroup, this.plugin.t("settings.imageSave.name"), this.plugin.t("settings.imageSave.desc"), (setting) => setting
       .addDropdown((dropdown) => {
         dropdown
           .addOption("dialog", this.plugin.t("settings.imageSave.dialog"))
@@ -3061,11 +3086,9 @@ class OwenExporterSettingTab extends PluginSettingTab {
             this.plugin.settings.imageSaveMode = value;
             await this.plugin.saveSettings();
           });
-      });
+      }));
 
-    new Setting(imageGroup)
-      .setName(this.plugin.t("settings.imageFolder.name"))
-      .setDesc(this.plugin.t("settings.imageFolder.desc"))
+    defineSetting(imageGroup, this.plugin.t("settings.imageFolder.name"), this.plugin.t("settings.imageFolder.desc"), (setting) => setting
       .addText((text) => {
         text
           .setPlaceholder("exports/images")
@@ -3074,11 +3097,9 @@ class OwenExporterSettingTab extends PluginSettingTab {
             this.plugin.settings.imageOutputFolder = value.trim() || DEFAULT_SETTINGS.imageOutputFolder;
             await this.plugin.saveSettings();
           });
-      });
+      }));
 
-    new Setting(imageGroup)
-      .setName(this.plugin.t("settings.batchReport.name"))
-      .setDesc(this.plugin.t("settings.batchReport.desc"))
+    defineSetting(imageGroup, this.plugin.t("settings.batchReport.name"), this.plugin.t("settings.batchReport.desc"), (setting) => setting
       .addDropdown((dropdown) => {
         dropdown
           .addOption("on-failure", this.plugin.t("settings.batchReport.failure"))
@@ -3089,11 +3110,9 @@ class OwenExporterSettingTab extends PluginSettingTab {
             this.plugin.settings.svgBatchReportMode = value;
             await this.plugin.saveSettings();
           });
-      });
+      }));
 
-    new Setting(imageGroup)
-      .setName(this.plugin.t("settings.imageFilename.name"))
-      .setDesc(this.plugin.t("settings.imageFilename.desc", { tokens: "{{name}}, {{rawName}}, {{note}}, {{folder}}, {{heading}}, {{index}}, {{format}}, {{scale}}, {{date}}, {{time}}" }))
+    defineSetting(imageGroup, this.plugin.t("settings.imageFilename.name"), this.plugin.t("settings.imageFilename.desc", { tokens: "{{name}}, {{rawName}}, {{note}}, {{folder}}, {{heading}}, {{index}}, {{format}}, {{scale}}, {{date}}, {{time}}" }), (setting) => setting
       .addText((text) => {
         text
           .setPlaceholder("{{name}}")
@@ -3102,39 +3121,35 @@ class OwenExporterSettingTab extends PluginSettingTab {
             this.plugin.settings.imageFilenameTemplate = value.trim() || DEFAULT_SETTINGS.imageFilenameTemplate;
             await this.plugin.saveSettings();
           });
-      });
+      }));
 
-    new Setting(imageGroup)
-      .setName(this.plugin.t("settings.imageQuality.name"))
-      .setDesc(this.plugin.t("settings.imageQuality.desc"))
+    defineSetting(imageGroup, this.plugin.t("settings.imageQuality.name"), this.plugin.t("settings.imageQuality.desc"), (setting) => setting
       .addSlider((slider) => {
+        setTooltip(slider.sliderEl, String(this.plugin.settings.imageQuality));
         slider
           .setLimits(0.1, 1, 0.01)
           .setValue(this.plugin.settings.imageQuality)
-          .setDynamicTooltip()
           .onChange(async (value) => {
+            setTooltip(slider.sliderEl, String(value));
             this.plugin.settings.imageQuality = value;
             await this.plugin.saveSettings();
           });
-      });
+      }));
 
-    new Setting(imageGroup)
-      .setName(this.plugin.t("settings.imageScale.name"))
-      .setDesc(this.plugin.t("settings.imageScale.desc"))
+    defineSetting(imageGroup, this.plugin.t("settings.imageScale.name"), this.plugin.t("settings.imageScale.desc"), (setting) => setting
       .addSlider((slider) => {
+        setTooltip(slider.sliderEl, String(this.plugin.settings.imageScale));
         slider
           .setLimits(1, 4, 0.25)
           .setValue(this.plugin.settings.imageScale)
-          .setDynamicTooltip()
           .onChange(async (value) => {
+            setTooltip(slider.sliderEl, String(value));
             this.plugin.settings.imageScale = value;
             await this.plugin.saveSettings();
           });
-      });
+      }));
 
-    new Setting(imageGroup)
-      .setName(this.plugin.t("settings.imageBackground.name"))
-      .setDesc(this.plugin.t("settings.imageBackground.desc"))
+    defineSetting(imageGroup, this.plugin.t("settings.imageBackground.name"), this.plugin.t("settings.imageBackground.desc"), (setting) => setting
       .addText((text) => {
         text
           .setPlaceholder("#FFFFFF")
@@ -3143,11 +3158,9 @@ class OwenExporterSettingTab extends PluginSettingTab {
             this.plugin.settings.imageBackground = value.trim() || "#FFFFFF";
             await this.plugin.saveSettings();
           });
-      });
+      }));
 
-    new Setting(htmlGroup)
-      .setName(this.plugin.t("settings.htmlProfile.name"))
-      .setDesc(this.plugin.t("settings.htmlProfile.desc"))
+    defineSetting(htmlGroup, this.plugin.t("settings.htmlProfile.name"), this.plugin.t("settings.htmlProfile.desc"), (setting) => setting
       .addDropdown((dropdown) => {
         dropdown
           .addOption("custom", this.plugin.t("common.custom"))
@@ -3158,11 +3171,9 @@ class OwenExporterSettingTab extends PluginSettingTab {
           .onChange(async (value: HtmlExportProfile) => {
             await this.applyHtmlProfile(value);
           });
-      });
+      }));
 
-    new Setting(htmlGroup)
-      .setName(this.plugin.t("settings.htmlFolder.name"))
-      .setDesc(this.plugin.t("settings.htmlFolder.desc"))
+    defineSetting(htmlGroup, this.plugin.t("settings.htmlFolder.name"), this.plugin.t("settings.htmlFolder.desc"), (setting) => setting
       .addText((text) => {
         text
           .setPlaceholder("exports/html")
@@ -3171,11 +3182,9 @@ class OwenExporterSettingTab extends PluginSettingTab {
             this.plugin.settings.htmlOutputFolder = value.trim() || DEFAULT_SETTINGS.htmlOutputFolder;
             await this.plugin.saveSettings();
           });
-      });
+      }));
 
-    new Setting(htmlGroup)
-      .setName(this.plugin.t("settings.htmlFilename.name"))
-      .setDesc(this.plugin.t("settings.htmlFilename.desc", { tokens: "{{name}}, {{rawName}}, {{note}}, {{folder}}, {{heading}}, {{index}}, {{format}}, {{date}}, {{time}}" }))
+    defineSetting(htmlGroup, this.plugin.t("settings.htmlFilename.name"), this.plugin.t("settings.htmlFilename.desc", { tokens: "{{name}}, {{rawName}}, {{note}}, {{folder}}, {{heading}}, {{index}}, {{format}}, {{date}}, {{time}}" }), (setting) => setting
       .addText((text) => {
         text
           .setPlaceholder("{{name}}")
@@ -3184,11 +3193,9 @@ class OwenExporterSettingTab extends PluginSettingTab {
             this.plugin.settings.htmlFilenameTemplate = value.trim() || DEFAULT_SETTINGS.htmlFilenameTemplate;
             await this.plugin.saveSettings();
           });
-      });
+      }));
 
-    new Setting(htmlGroup)
-      .setName(this.plugin.t("settings.htmlSave.name"))
-      .setDesc(this.plugin.t("settings.htmlSave.desc"))
+    defineSetting(htmlGroup, this.plugin.t("settings.htmlSave.name"), this.plugin.t("settings.htmlSave.desc"), (setting) => setting
       .addDropdown((dropdown) => {
         dropdown
           .addOption("document", this.plugin.t("settings.htmlSave.document"))
@@ -3199,11 +3206,9 @@ class OwenExporterSettingTab extends PluginSettingTab {
             this.plugin.settings.htmlSaveMode = value;
             await this.plugin.saveSettings();
           });
-      });
+      }));
 
-    new Setting(htmlGroup)
-      .setName(this.plugin.t("settings.htmlStyle.name"))
-      .setDesc(this.plugin.t("settings.htmlStyle.desc"))
+    defineSetting(htmlGroup, this.plugin.t("settings.htmlStyle.name"), this.plugin.t("settings.htmlStyle.desc"), (setting) => setting
       .addDropdown((dropdown) => {
         dropdown
           .addOption("obsidian", this.plugin.t("settings.htmlStyle.obsidian"))
@@ -3215,11 +3220,9 @@ class OwenExporterSettingTab extends PluginSettingTab {
             this.plugin.settings.htmlStyleMode = value;
             await this.plugin.saveSettings();
           });
-      });
+      }));
 
-    new Setting(htmlGroup)
-      .setName(this.plugin.t("settings.clipboard.name"))
-      .setDesc(this.plugin.t("settings.clipboard.desc"))
+    defineSetting(htmlGroup, this.plugin.t("settings.clipboard.name"), this.plugin.t("settings.clipboard.desc"), (setting) => setting
       .addDropdown((dropdown) => {
         dropdown
           .addOption("html-and-text", this.plugin.t("settings.clipboard.both"))
@@ -3230,11 +3233,9 @@ class OwenExporterSettingTab extends PluginSettingTab {
             this.plugin.settings.htmlClipboardMode = value;
             await this.plugin.saveSettings();
           });
-      });
+      }));
 
-    new Setting(htmlGroup)
-      .setName(this.plugin.t("settings.documentTitle.name"))
-      .setDesc(this.plugin.t("settings.documentTitle.desc"))
+    defineSetting(htmlGroup, this.plugin.t("settings.documentTitle.name"), this.plugin.t("settings.documentTitle.desc"), (setting) => setting
       .addText((text) => {
         text
           .setPlaceholder("{{name}} export")
@@ -3244,11 +3245,9 @@ class OwenExporterSettingTab extends PluginSettingTab {
             this.plugin.settings.htmlDocumentTitle = value.trim() || DEFAULT_SETTINGS.htmlDocumentTitle;
             await this.plugin.saveSettings();
           });
-      });
+      }));
 
-    new Setting(htmlGroup)
-      .setName(this.plugin.t("settings.frontmatter.name"))
-      .setDesc(this.plugin.t("settings.frontmatter.desc"))
+    defineSetting(htmlGroup, this.plugin.t("settings.frontmatter.name"), this.plugin.t("settings.frontmatter.desc"), (setting) => setting
       .addToggle((toggle) => {
         toggle
           .setValue(this.plugin.settings.htmlExcludeFrontmatter)
@@ -3256,11 +3255,9 @@ class OwenExporterSettingTab extends PluginSettingTab {
             this.plugin.settings.htmlExcludeFrontmatter = value;
             await this.plugin.saveSettings();
           });
-      });
+      }));
 
-    new Setting(htmlGroup)
-      .setName(this.plugin.t("settings.headingIds.name"))
-      .setDesc(this.plugin.t("settings.headingIds.desc"))
+    defineSetting(htmlGroup, this.plugin.t("settings.headingIds.name"), this.plugin.t("settings.headingIds.desc"), (setting) => setting
       .addToggle((toggle) => {
         toggle
           .setValue(this.plugin.settings.htmlPreserveHeadingIds)
@@ -3268,11 +3265,9 @@ class OwenExporterSettingTab extends PluginSettingTab {
             this.plugin.settings.htmlPreserveHeadingIds = value;
             await this.plugin.saveSettings();
           });
-      });
+      }));
 
-    new Setting(htmlGroup)
-      .setName(this.plugin.t("settings.callouts.name"))
-      .setDesc(this.plugin.t("settings.callouts.desc"))
+    defineSetting(htmlGroup, this.plugin.t("settings.callouts.name"), this.plugin.t("settings.callouts.desc"), (setting) => setting
       .addToggle((toggle) => {
         toggle
           .setValue(this.plugin.settings.htmlPreserveCalloutClasses)
@@ -3280,11 +3275,9 @@ class OwenExporterSettingTab extends PluginSettingTab {
             this.plugin.settings.htmlPreserveCalloutClasses = value;
             await this.plugin.saveSettings();
           });
-      });
+      }));
 
-    new Setting(htmlGroup)
-      .setName(this.plugin.t("settings.internalLinks.name"))
-      .setDesc(this.plugin.t("settings.internalLinks.desc"))
+    defineSetting(htmlGroup, this.plugin.t("settings.internalLinks.name"), this.plugin.t("settings.internalLinks.desc"), (setting) => setting
       .addToggle((toggle) => {
         toggle
           .setValue(this.plugin.settings.htmlConvertInternalLinksToObsidianUris)
@@ -3292,11 +3285,9 @@ class OwenExporterSettingTab extends PluginSettingTab {
             this.plugin.settings.htmlConvertInternalLinksToObsidianUris = value;
             await this.plugin.saveSettings();
           });
-      });
+      }));
 
-    new Setting(htmlGroup)
-      .setName(this.plugin.t("settings.assets.name"))
-      .setDesc(this.plugin.t("settings.assets.desc"))
+    defineSetting(htmlGroup, this.plugin.t("settings.assets.name"), this.plugin.t("settings.assets.desc"), (setting) => setting
       .addDropdown((dropdown) => {
         dropdown
           .addOption("keep", this.plugin.t("settings.assets.keep"))
@@ -3308,11 +3299,9 @@ class OwenExporterSettingTab extends PluginSettingTab {
             this.plugin.settings.htmlAssetMode = value;
             await this.plugin.saveSettings();
           });
-      });
+      }));
 
-    new Setting(htmlGroup)
-      .setName(this.plugin.t("settings.assetFolder.name"))
-      .setDesc(this.plugin.t("settings.assetFolder.desc"))
+    defineSetting(htmlGroup, this.plugin.t("settings.assetFolder.name"), this.plugin.t("settings.assetFolder.desc"), (setting) => setting
       .addText((text) => {
         text
           .setPlaceholder("exports/html/assets")
@@ -3321,11 +3310,9 @@ class OwenExporterSettingTab extends PluginSettingTab {
             this.plugin.settings.htmlAssetOutputFolder = value.trim() || DEFAULT_SETTINGS.htmlAssetOutputFolder;
             await this.plugin.saveSettings();
           });
-      });
+      }));
 
-    new Setting(htmlGroup)
-      .setName(this.plugin.t("settings.documentTemplate.name"))
-      .setDesc(this.plugin.t("settings.documentTemplate.desc", { tokens: "{{title}}, {{content}}, {{sourcePath}}, {{style}}" }))
+    defineSetting(htmlGroup, this.plugin.t("settings.documentTemplate.name"), this.plugin.t("settings.documentTemplate.desc", { tokens: "{{title}}, {{content}}, {{sourcePath}}, {{style}}" }), (setting) => setting
       .addTextArea((text) => {
         text
           .setPlaceholder("<!doctype html>...{{content}}...")
@@ -3335,22 +3322,18 @@ class OwenExporterSettingTab extends PluginSettingTab {
             this.plugin.settings.htmlDocumentTemplate = value;
             await this.plugin.saveSettings();
           });
-      });
+      }));
 
     let profileName = "";
-    new Setting(workflowGroup)
-      .setName(this.plugin.t("settings.quickProfile.name"))
-      .setDesc(this.plugin.t("settings.quickProfile.desc"))
+    defineSetting(workflowGroup, this.plugin.t("settings.quickProfile.name"), this.plugin.t("settings.quickProfile.desc"), (setting) => setting
       .addButton((button) => {
         button
           .setButtonText(this.plugin.t("settings.quickProfile.button"))
           .setIcon("list-filter")
           .onClick(() => this.plugin.openHtmlProfileSwitcher());
-      });
+      }));
 
-    new Setting(workflowGroup)
-      .setName(this.plugin.t("settings.manifest.name"))
-      .setDesc(this.plugin.t("settings.manifest.desc"))
+    defineSetting(workflowGroup, this.plugin.t("settings.manifest.name"), this.plugin.t("settings.manifest.desc"), (setting) => setting
       .addToggle((toggle) => {
         toggle
           .setValue(this.plugin.settings.writeExportManifest)
@@ -3358,11 +3341,9 @@ class OwenExporterSettingTab extends PluginSettingTab {
             this.plugin.settings.writeExportManifest = value;
             await this.plugin.saveSettings();
           });
-      });
+      }));
 
-    new Setting(workflowGroup)
-      .setName(this.plugin.t("settings.saveProfile.name"))
-      .setDesc(this.plugin.t("settings.saveProfile.desc"))
+    defineSetting(workflowGroup, this.plugin.t("settings.saveProfile.name"), this.plugin.t("settings.saveProfile.desc"), (setting) => setting
       .addText((text) => {
         text
           .setPlaceholder(this.plugin.t("settings.saveProfile.placeholder"))
@@ -3377,12 +3358,10 @@ class OwenExporterSettingTab extends PluginSettingTab {
           .onClick(async () => {
             await this.saveCurrentHtmlProfile(profileName);
           });
-      });
+      }));
 
     if (this.plugin.settings.htmlCustomProfiles.length) {
-      new Setting(workflowGroup)
-        .setName(this.plugin.t("settings.applyProfile.name"))
-        .setDesc(this.plugin.t("settings.applyProfile.desc"))
+      defineSetting(workflowGroup, this.plugin.t("settings.applyProfile.name"), this.plugin.t("settings.applyProfile.desc"), (setting) => setting
         .addDropdown((dropdown) => {
           for (const profile of this.plugin.settings.htmlCustomProfiles) {
             dropdown.addOption(profile.name, profile.name);
@@ -3401,12 +3380,10 @@ class OwenExporterSettingTab extends PluginSettingTab {
                 await this.deleteCustomHtmlProfile(name.trim());
               }
             });
-        });
+        }));
     }
 
-    new Setting(workflowGroup)
-      .setName(this.plugin.t("settings.openAfter.name"))
-      .setDesc(this.plugin.t("settings.openAfter.desc"))
+    defineSetting(workflowGroup, this.plugin.t("settings.openAfter.name"), this.plugin.t("settings.openAfter.desc"), (setting) => setting
       .addToggle((toggle) => {
         toggle
           .setValue(this.plugin.settings.afterExportOpenFile)
@@ -3414,11 +3391,9 @@ class OwenExporterSettingTab extends PluginSettingTab {
             this.plugin.settings.afterExportOpenFile = value;
             await this.plugin.saveSettings();
           });
-      });
+      }));
 
-    new Setting(workflowGroup)
-      .setName(this.plugin.t("settings.revealAfter.name"))
-      .setDesc(this.plugin.t("settings.revealAfter.desc"))
+    defineSetting(workflowGroup, this.plugin.t("settings.revealAfter.name"), this.plugin.t("settings.revealAfter.desc"), (setting) => setting
       .addToggle((toggle) => {
         toggle
           .setValue(this.plugin.settings.afterExportRevealFile)
@@ -3426,11 +3401,9 @@ class OwenExporterSettingTab extends PluginSettingTab {
             this.plugin.settings.afterExportRevealFile = value;
             await this.plugin.saveSettings();
           });
-      });
+      }));
 
-    new Setting(workflowGroup)
-      .setName(this.plugin.t("settings.copyAfter.name"))
-      .setDesc(this.plugin.t("settings.copyAfter.desc"))
+    defineSetting(workflowGroup, this.plugin.t("settings.copyAfter.name"), this.plugin.t("settings.copyAfter.desc"), (setting) => setting
       .addToggle((toggle) => {
         toggle
           .setValue(this.plugin.settings.afterExportCopyPath)
@@ -3438,11 +3411,9 @@ class OwenExporterSettingTab extends PluginSettingTab {
             this.plugin.settings.afterExportCopyPath = value;
             await this.plugin.saveSettings();
           });
-      });
+      }));
 
-    new Setting(workflowGroup)
-      .setName(this.plugin.t("settings.insertLink.name"))
-      .setDesc(this.plugin.t("settings.insertLink.desc"))
+    defineSetting(workflowGroup, this.plugin.t("settings.insertLink.name"), this.plugin.t("settings.insertLink.desc"), (setting) => setting
       .addToggle((toggle) => {
         toggle
           .setValue(this.plugin.settings.afterImageExportInsertMarkdownLink)
@@ -3450,11 +3421,9 @@ class OwenExporterSettingTab extends PluginSettingTab {
             this.plugin.settings.afterImageExportInsertMarkdownLink = value;
             await this.plugin.saveSettings();
           });
-      });
+      }));
 
-    new Setting(backupGroup)
-      .setName(this.plugin.t("settings.backup.name"))
-      .setDesc(this.plugin.t("settings.backup.desc"))
+    defineSetting(backupGroup, this.plugin.t("settings.backup.name"), this.plugin.t("settings.backup.desc"), (setting) => setting
       .addButton((button) => {
         button
           .setButtonText(this.plugin.t("common.export"))
@@ -3467,25 +3436,37 @@ class OwenExporterSettingTab extends PluginSettingTab {
           .setIcon("clipboard")
           .onClick(async () => {
             await this.plugin.importSettingsJsonFromClipboard();
-            this.renderSettings();
+            this.refresh();
           });
-      });
+      }));
+    return definitions;
   }
 
-  private createSettingsGroup(parent: HTMLElement, title: string, description: string, icon: string): HTMLElement {
-    const group = parent.createDiv({ cls: "owen-exporter-settings-group" });
-    const header = group.createDiv({ cls: "owen-exporter-settings-group-header" });
-    const heading = new Setting(header)
-      .setName(title)
-      .setDesc(description)
-      .setHeading();
-    heading.settingEl.dataset.owenSection = icon;
-    const glyph = heading.settingEl.createDiv({ cls: "owen-exporter-settings-section-glyph" });
-    glyph.setAttr("aria-hidden", "true");
-    setIcon(glyph, icon);
-    heading.settingEl.insertBefore(glyph, heading.infoEl);
+  private prepareSettingsRow(setting: Setting) {
+    this.containerEl.addClass("owen-exporter-settings");
+    if (requireApiVersion("1.13.0")) {
+      this.containerEl.addClass("owen-exporter-settings-native", "owen-exporter-settings-root");
+      setting.settingEl.parentElement?.addClass("owen-exporter-settings-group-body");
+    }
+  }
 
-    return group.createDiv({ cls: "owen-exporter-settings-group-body" });
+  private createSettingsGroup(definitions: SearchableExporterGroup[], title: string, description: string, icon: string): SearchableExporterSetting[] {
+    const items: SearchableExporterSetting[] = [{
+      name: title,
+      desc: description,
+      render: (heading) => {
+        this.prepareSettingsRow(heading);
+        heading.setHeading();
+        heading.settingEl.addClass("owen-exporter-settings-heading");
+        heading.settingEl.dataset.owenSection = icon;
+        const glyph = heading.settingEl.createDiv({ cls: "owen-exporter-settings-section-glyph" });
+        glyph.setAttr("aria-hidden", "true");
+        setIcon(glyph, icon);
+        heading.settingEl.insertBefore(glyph, heading.infoEl);
+      }
+    }];
+    definitions.push({ type: "group", cls: "owen-exporter-settings-group", items });
+    return items;
   }
 
   private async applyHtmlProfile(profile: HtmlExportProfile) {
@@ -3494,7 +3475,7 @@ class OwenExporterSettingTab extends PluginSettingTab {
       Object.assign(this.plugin.settings, HTML_EXPORT_PROFILES[profile]);
     }
     await this.plugin.saveSettings();
-    this.renderSettings();
+    this.refresh();
   }
 
   private async saveCurrentHtmlProfile(name: string) {
@@ -3523,7 +3504,7 @@ class OwenExporterSettingTab extends PluginSettingTab {
     this.plugin.settings.htmlCustomProfiles = profiles;
     await this.plugin.saveSettings();
     new Notice(this.plugin.t("notice.profileSaved", { name }));
-    this.renderSettings();
+    this.refresh();
   }
 
   private async applyCustomHtmlProfile(name: string) {
@@ -3549,7 +3530,7 @@ class OwenExporterSettingTab extends PluginSettingTab {
     });
     await this.plugin.saveSettings();
     new Notice(this.plugin.t("notice.profileApplied", { name }));
-    this.renderSettings();
+    this.refresh();
   }
 
   private async deleteCustomHtmlProfile(name: string) {
@@ -3561,7 +3542,7 @@ class OwenExporterSettingTab extends PluginSettingTab {
     }
     await this.plugin.saveSettings();
     new Notice(this.plugin.t("notice.profileDeleted", { name }));
-    this.renderSettings();
+    this.refresh();
   }
 
   private markCustomHtmlProfile() {

@@ -114,8 +114,10 @@ Use **Export all SVG embeds in current note** for image batches and **Diagnose S
 ## Compatibility and boundaries
 
 - Requires **desktop Obsidian 1.5.0 or later**; the manifest marks the plugin desktop-only.
+- Individual settings participate in Obsidian's settings search on 1.13.0 and later; older supported hosts keep the existing grouped controls. Newer Obsidian development types do not raise the runtime minimum.
 - The interface follows Obsidian: Korean locales use Korean; other locales use English. Override this under **Settings → Owen Exporter → Interface → Language**.
 - A local save dialog can target a PC folder; when unavailable, the plugin falls back to browser download. Direct-vault saving uses the configured output folder instead.
+- The community review's filesystem-access notice is expected for PC-folder saving: Node writes only to the path selected in that save dialog. Vault exports continue to use Obsidian's vault adapter.
 - Reading-mode text selections export the selected rendered HTML fragment, not a reconstruction of the original Markdown source.
 - Choose style and asset modes deliberately: output fidelity, portability, and file size have different trade-offs.
 - Exporter handles image/HTML delivery; it is not a replacement for Obsidian's PDF export or Mermaid's visual editor.
@@ -134,6 +136,8 @@ Use **Export all SVG embeds in current note** for image batches and **Diagnose S
 <br>
 
 ## Contributing and license
+
+After a successful release workflow, only the latest published release and its matching tag are retained. Older release downloads and tag-based rollback links are removed; source commit history is preserved. The retention workflow also supports a guarded dry run.
 
 ```bash
 npm install

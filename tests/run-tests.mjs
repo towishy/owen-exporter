@@ -32,3 +32,4 @@ process.env.OWEN_EXPORTER_CORE_MODULE = pathToFileURL(outfile).href;
 process.env.OWEN_EXPORTER_I18N_MODULE = pathToFileURL(i18nOutfile).href;
 await import("./core.test.mjs");
 await import("./i18n.test.mjs");
+await import("./settings.test.mjs");
