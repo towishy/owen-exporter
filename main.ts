@@ -1,5 +1,6 @@
 import { remote, shell } from "electron";
 import { writeFile } from "fs/promises";
+import { styleSettingsHeading, styleSettingsRow } from "./settings-design";
 import {
     App,
     Component,
@@ -2992,7 +2993,7 @@ class OwenExporterSettingTab extends PluginSettingTab {
   private displayLegacy(): void {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.addClass("owen-exporter-settings");
+    containerEl.addClass("owen-exporter-settings", "owen-settings-design");
     const settingsRoot = containerEl.createDiv({ cls: "owen-exporter-settings-root" });
     for (const definition of this.getSettingDefinitions()) {
       const group = settingsRoot.createDiv({ cls: "owen-exporter-settings-group" });
@@ -3017,6 +3018,7 @@ class OwenExporterSettingTab extends PluginSettingTab {
       group.push({ name, desc, render: (setting) => {
         this.prepareSettingsRow(setting);
         configure(setting);
+        styleSettingsRow(setting);
       } });
     };
     const interfaceGroup = this.createSettingsGroup(
@@ -3443,7 +3445,7 @@ class OwenExporterSettingTab extends PluginSettingTab {
   }
 
   private prepareSettingsRow(setting: Setting) {
-    this.containerEl.addClass("owen-exporter-settings");
+    this.containerEl.addClass("owen-exporter-settings", "owen-settings-design");
     if (requireApiVersion("1.13.0")) {
       this.containerEl.addClass("owen-exporter-settings-native", "owen-exporter-settings-root");
       setting.settingEl.parentElement?.addClass("owen-exporter-settings-group-body");
@@ -3459,6 +3461,7 @@ class OwenExporterSettingTab extends PluginSettingTab {
         heading.setHeading();
         heading.settingEl.addClass("owen-exporter-settings-heading");
         heading.settingEl.dataset.owenSection = icon;
+        styleSettingsHeading(heading.settingEl, icon);
         const glyph = heading.settingEl.createDiv({ cls: "owen-exporter-settings-section-glyph" });
         glyph.setAttr("aria-hidden", "true");
         setIcon(glyph, icon);
