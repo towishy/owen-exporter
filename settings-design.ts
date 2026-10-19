@@ -75,7 +75,15 @@ function enhanceSettingsDropdown(select: HTMLSelectElement, label: string): void
 
   const updatePosition = () => {
     const rect = select.getBoundingClientRect();
-    const width = Math.min(Math.max(180, rect.width), view.innerWidth - 16);
+    const measureContext = document.createElement("canvas").getContext("2d");
+    const widestLabel = options().reduce((widest, option, index) => {
+      if (!measureContext) return widest;
+      const rowStyle = view.getComputedStyle(rows[index] ?? menu);
+      measureContext.font = rowStyle.font || `${rowStyle.fontSize} ${rowStyle.fontFamily}`;
+      return Math.max(widest, measureContext.measureText(option.label || option.textContent || "").width);
+    }, 0);
+    const contentWidth = Math.ceil(widestLabel + 64);
+    const width = Math.min(Math.max(180, rect.width, contentWidth), view.innerWidth - 16);
     const itemHeight = 44;
     const desiredHeight = Math.min(options().length * itemHeight + 12, 320);
     const below = view.innerHeight - rect.bottom - 8;

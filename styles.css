@@ -449,6 +449,7 @@
   .owen-settings-design .owen-settings-detail[popover] { position-anchor: --owen-settings-help; position-area: bottom span-right; position-try-fallbacks: flip-inline, flip-block; margin: 8px; }
 }
 :is(.owen-settings-design, .modal.mod-settings .vertical-tab-content.owen-settings-design) .owen-settings-dropdown-popover[popover] {
+  box-sizing: border-box;
   position: fixed;
   inset: auto;
   max-width: calc(100vw - 16px);
@@ -471,11 +472,18 @@
   gap: 10px;
   margin: 2px 0;
   padding: 8px 12px;
+  white-space: nowrap;
   border: 1px solid transparent;
   border-radius: 5px;
   background: transparent;
   color: var(--os-text);
   cursor: pointer;
+}
+:is(.owen-settings-design, .modal.mod-settings .vertical-tab-content.owen-settings-design) .owen-settings-dropdown-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 :is(.owen-settings-design, .modal.mod-settings .vertical-tab-content.owen-settings-design) .owen-settings-dropdown-option:is(.is-selected, .is-active, :hover) {
   border-color: var(--os-line);
