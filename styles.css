@@ -440,8 +440,34 @@
 :is(.owen-settings-design, .modal.mod-settings .vertical-tab-content.owen-settings-design) :is(select, input[type="text"]) { width: min(238px, 100%); max-width: 100%; padding: 0 12px; font-size: 13px; }
 :is(.owen-settings-design, .modal.mod-settings .vertical-tab-content.owen-settings-design) :is(button, select, input):focus-visible { outline: 2px solid transparent; border-color: var(--os-muted); background-color: var(--os-selection); }
 :is(.owen-settings-design, .modal.mod-settings .vertical-tab-content.owen-settings-design) button:hover { background: var(--os-selection); }
-:is(.owen-settings-design, .modal.mod-settings .vertical-tab-content.owen-settings-design) .owen-settings-help { display: inline-grid; width: 44px; height: 44px; margin-inline-start: 4px; padding: 0; place-items: center; border: 1px solid transparent; border-radius: 50%; color: var(--os-muted); vertical-align: middle; background: transparent; }
-.owen-settings-help svg { width: 14px; height: 14px; }
+:is(.owen-settings-design, .modal.mod-settings .vertical-tab-content.owen-settings-design) button.owen-settings-help {
+  appearance: none;
+  display: inline-grid;
+  flex: 0 0 44px;
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  min-height: 44px;
+  margin-inline-start: 4px;
+  padding: 0;
+  place-items: center;
+  border: 0 !important;
+  border-radius: 50%;
+  color: var(--os-muted);
+  vertical-align: middle;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+:is(.owen-settings-design, .modal.mod-settings .vertical-tab-content.owen-settings-design) button.owen-settings-help:hover {
+  color: var(--os-text);
+  background: color-mix(in srgb, var(--os-selection) 72%, transparent) !important;
+}
+:is(.owen-settings-design, .modal.mod-settings .vertical-tab-content.owen-settings-design) button.owen-settings-help:focus-visible {
+  outline: 2px solid var(--os-accent);
+  outline-offset: 1px;
+  background: transparent !important;
+}
+.owen-settings-help svg { width: 16px; height: 16px; }
 .owen-settings-design .owen-settings-detail[popover] { position: fixed; inset: auto; max-width: min(360px, calc(100vw - 32px)); margin: auto; padding: 14px 16px; border: 1px solid var(--os-line); border-radius: 8px; background: var(--os-surface); color: var(--os-muted); font-size: 12px; line-height: 1.6; box-shadow: 0 8px 24px rgb(15 23 42 / 0.14); }
 @supports (anchor-scope: --owen-settings-help) {
   .owen-settings-design .setting-item { anchor-scope: --owen-settings-help; }

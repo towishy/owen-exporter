@@ -4,7 +4,7 @@ export type TranslationVars = Record<string, string | number>;
 
 export const EN_TRANSLATIONS = {
   "settings.group.interface": "Interface",
-  "settings.group.interfaceDesc": "Choose the language used throughout Owen Exporter.",
+  "settings.group.interfaceDesc": "Choose the language to use.",
   "language.name": "Language",
   "language.desc": "Follow Obsidian's language or override it for Owen Exporter.",
   "language.auto": "Automatic (Obsidian)",
@@ -240,7 +240,7 @@ export type TranslationKey = keyof typeof EN_TRANSLATIONS;
 export const KO_TRANSLATIONS = {
   ...EN_TRANSLATIONS,
   "settings.group.interface": "인터페이스",
-  "settings.group.interfaceDesc": "Owen Exporter 전체에서 사용할 언어를 선택합니다.",
+  "settings.group.interfaceDesc": "사용할 언어를 선택합니다.",
   "language.name": "언어",
   "language.desc": "Obsidian 언어를 따르거나 Owen Exporter에서 사용할 언어를 재정의합니다.",
   "language.auto": "자동 (Obsidian)",
